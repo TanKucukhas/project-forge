@@ -1,6 +1,7 @@
 "use client";
 
 import { OUTPUT_GENERATORS } from "@/lib/types";
+import { modelOptions } from "@/lib/ai/models";
 import { useWorkspace } from "@/lib/store";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Card } from "@/components/ui/card";
@@ -11,13 +12,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-
-const MODELS = [
-  { id: "claude-cli", label: "Claude CLI (local)" },
-  { id: "codex-cli", label: "Codex CLI (local)" },
-  { id: "openai", label: "OpenAI" },
-  { id: "gemini", label: "Gemini" },
-];
 
 export function RightPanel() {
   const { modelId, setModel } = useWorkspace();
@@ -33,7 +27,7 @@ export function RightPanel() {
             <SelectValue placeholder="Model" />
           </SelectTrigger>
           <SelectContent>
-            {MODELS.map((m) => (
+            {modelOptions.map((m) => (
               <SelectItem key={m.id} value={m.id}>
                 {m.label}
               </SelectItem>

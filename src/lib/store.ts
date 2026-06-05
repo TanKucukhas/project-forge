@@ -19,7 +19,7 @@ export const useWorkspace = create<WorkspaceState>((set) => ({
   activeNotebookId: null,
   activeSourceId: null,
   centerMode: "learn",
-  modelId: "claude-cli",
+  modelId: "claude:sonnet",
   setActiveNotebook: (id) => set({ activeNotebookId: id, activeSourceId: null }),
   setActiveSource: (id) => set({ activeSourceId: id, centerMode: "preview" }),
   setCenterMode: (mode) => set({ centerMode: mode }),
