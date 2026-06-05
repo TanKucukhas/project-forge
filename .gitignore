@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+.pnp.*
+.yarn/*
+
+# Next.js
+.next/
+out/
+build/
+dist/
+
+# Local data (the knowledge base lives here — never commit user data)
+/data/*.sqlite
+/data/*.sqlite-*
+/learning/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# OS / editor
+.DS_Store
+*.log
+.vscode/
+.idea/
+
+# Misc
+coverage/
+*.tsbuildinfo
+next-env.d.ts
