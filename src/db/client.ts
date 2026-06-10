@@ -22,8 +22,26 @@ function connect(): Database.Database {
   conn.pragma("journal_mode = WAL");
   conn.pragma("foreign_keys = ON");
   conn.exec(DDL);
+  ensureColumn(conn, "sources", "thumbnail", "TEXT");
   sqlite = conn;
   return conn;
+}
+
+/**
+ * Additive migration helper: add a column to an existing table if it's missing.
+ * `CREATE TABLE IF NOT EXISTS` never alters an already-created table, so columns
+ * introduced after a DB was first built are added here (idempotent).
+ */
+function ensureColumn(
+  conn: Database.Database,
+  table: string,
+  column: string,
+  type: string,
+): void {
+  const cols = conn.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === column)) {
+    conn.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  }
 }
 
 export function initDb(): void {

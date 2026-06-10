@@ -20,8 +20,13 @@ export type OutputType =
   | "cursor-plan"
   | "master-brief";
 
-/** Center-panel modes — the three product modes. */
-export type CenterMode = "learn" | "ask" | "preview";
+/** What the center content area is showing. Driven by the top nav + clicks. */
+export type CenterMode =
+  | "learn"
+  | "analyze"
+  | "ask"
+  | "projects"
+  | "global-settings";
 
 export const OUTPUT_GENERATORS: { type: OutputType; label: string; blurb: string }[] = [
   { type: "master-brief", label: "Master Project Brief", blurb: "20-section build-ready spec" },

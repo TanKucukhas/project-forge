@@ -1,71 +1,83 @@
 /**
- * Canonical schema DDL for ProjectForge's local SQLite index.
+ * Canonical schema DDL for ProjectForge's local SQLite index (v1).
  *
- * This is the source of truth for table structure (drizzle-kit does not handle
- * FTS5 virtual tables or triggers, so we own the DDL directly). The Drizzle
- * schema in `schema.ts` mirrors these tables for type-safe queries.
+ * Source of truth for table structure (drizzle-kit does not handle FTS5 virtual
+ * tables or triggers, so we own the DDL directly). The Drizzle schema in
+ * `schema.ts` mirrors these tables for type-safe queries.
  *
- * All statements are idempotent — running `initDb()` repeatedly is safe.
+ * v1: top-level entity is `projects` (with a goal). Sources gain scoring,
+ * category, distilled summary, and free YouTube metadata. Categories/tags are
+ * first-class so Ask can be scoped. All statements are idempotent.
  */
 export const DDL = /* sql */ `
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
-CREATE TABLE IF NOT EXISTS notebooks (
+CREATE TABLE IF NOT EXISTS projects (
   id          TEXT PRIMARY KEY,
   title       TEXT NOT NULL,
-  description TEXT NOT NULL DEFAULT '',
-  tags        TEXT NOT NULL DEFAULT '[]',   -- JSON array
+  goal        TEXT NOT NULL DEFAULT '',   -- the steering context for distill/relevance/outputs
+  settings    TEXT NOT NULL DEFAULT '{}', -- JSON: distill prompt overrides, scoring weights
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS sources (
-  id            TEXT PRIMARY KEY,
-  notebook_id   TEXT NOT NULL REFERENCES notebooks(id) ON DELETE CASCADE,
-  type          TEXT NOT NULL,              -- youtube | article | website | markdown | pdf | note
-  title         TEXT NOT NULL,
-  url           TEXT,
-  author        TEXT,
-  raw_text_path TEXT,                       -- path to the saved snapshot in learning/
-  summary       TEXT NOT NULL DEFAULT '',
-  tags          TEXT NOT NULL DEFAULT '[]', -- JSON array
-  status        TEXT NOT NULL DEFAULT 'pending', -- pending | processed | failed
-  created_at    TEXT NOT NULL
+  id             TEXT PRIMARY KEY,
+  project_id     TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  type           TEXT NOT NULL,              -- youtube | article | website | markdown | pdf | note
+  title          TEXT NOT NULL,
+  url            TEXT,
+  author         TEXT,
+  channel        TEXT,
+  thumbnail      TEXT,                       -- preview image (YouTube thumb / article og:image)
+  raw_text_path  TEXT,                       -- path to the saved raw snapshot in learning/
+  summary        TEXT NOT NULL DEFAULT '',   -- short status/preview line
+  category       TEXT,                       -- assigned at distill
+  tags           TEXT NOT NULL DEFAULT '[]', -- JSON array (also normalized into source_tags)
+  view_count     INTEGER,
+  like_count     INTEGER,
+  relevance      INTEGER,                    -- 0-100, model-judged vs goal (null until distilled)
+  credibility    INTEGER,                    -- 0-100, views+like-ratio heuristic (null until scored)
+  distilled_path TEXT,                       -- path to the compact distilled summary markdown
+  status         TEXT NOT NULL DEFAULT 'pending', -- pending | processed | distilled | failed
+  created_at     TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_sources_notebook ON sources(notebook_id);
+CREATE INDEX IF NOT EXISTS idx_sources_project ON sources(project_id);
 
 CREATE TABLE IF NOT EXISTS source_chunks (
   id          TEXT PRIMARY KEY,
   source_id   TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
-  notebook_id TEXT NOT NULL REFERENCES notebooks(id) ON DELETE CASCADE,
+  project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   chunk_index INTEGER NOT NULL,
   content     TEXT NOT NULL,
   token_count INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_source ON source_chunks(source_id);
-CREATE INDEX IF NOT EXISTS idx_chunks_notebook ON source_chunks(notebook_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_project ON source_chunks(project_id);
 
 CREATE TABLE IF NOT EXISTS learning_docs (
   id            TEXT PRIMARY KEY,
-  notebook_id   TEXT NOT NULL REFERENCES notebooks(id) ON DELETE CASCADE,
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  source_id     TEXT REFERENCES sources(id) ON DELETE SET NULL,
+  kind          TEXT NOT NULL DEFAULT 'doc', -- doc | distilled
   title         TEXT NOT NULL,
   markdown_path TEXT NOT NULL,
   summary       TEXT NOT NULL DEFAULT '',
   created_at    TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_docs_notebook ON learning_docs(notebook_id);
+CREATE INDEX IF NOT EXISTS idx_docs_project ON learning_docs(project_id);
 
 CREATE TABLE IF NOT EXISTS outputs (
   id            TEXT PRIMARY KEY,
-  notebook_id   TEXT NOT NULL REFERENCES notebooks(id) ON DELETE CASCADE,
-  type          TEXT NOT NULL,             -- game | startup | side-project | prd | tech-spec | claude-prompt | ...
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  type          TEXT NOT NULL,
   title         TEXT NOT NULL,
   markdown_path TEXT NOT NULL,
   model_id      TEXT,
   created_at    TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_outputs_notebook ON outputs(notebook_id);
+CREATE INDEX IF NOT EXISTS idx_outputs_project ON outputs(project_id);
 
 CREATE TABLE IF NOT EXISTS output_sources (
   output_id TEXT NOT NULL REFERENCES outputs(id) ON DELETE CASCADE,
@@ -73,20 +85,39 @@ CREATE TABLE IF NOT EXISTS output_sources (
   PRIMARY KEY (output_id, source_id)
 );
 
--- Full-text search over source chunks (FTS5). content is indexed; we keep
--- external-content style refs via stored columns for simple retrieval.
+-- First-class taxonomy (assigned at distill, used to scope Ask).
+CREATE TABLE IF NOT EXISTS categories (
+  id         TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name       TEXT NOT NULL,
+  UNIQUE (project_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS tags (
+  id         TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name       TEXT NOT NULL,
+  UNIQUE (project_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS source_tags (
+  source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+  tag_id    TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+  PRIMARY KEY (source_id, tag_id)
+);
+
+-- Full-text search over source chunks (FTS5).
 CREATE VIRTUAL TABLE IF NOT EXISTS source_chunks_fts USING fts5(
   content,
   chunk_id    UNINDEXED,
   source_id   UNINDEXED,
-  notebook_id UNINDEXED,
+  project_id  UNINDEXED,
   tokenize = 'porter unicode61'
 );
 
--- Keep the FTS index in sync with source_chunks via triggers.
 CREATE TRIGGER IF NOT EXISTS source_chunks_ai AFTER INSERT ON source_chunks BEGIN
-  INSERT INTO source_chunks_fts(content, chunk_id, source_id, notebook_id)
-  VALUES (new.content, new.id, new.source_id, new.notebook_id);
+  INSERT INTO source_chunks_fts(content, chunk_id, source_id, project_id)
+  VALUES (new.content, new.id, new.source_id, new.project_id);
 END;
 
 CREATE TRIGGER IF NOT EXISTS source_chunks_ad AFTER DELETE ON source_chunks BEGIN
@@ -95,7 +126,7 @@ END;
 
 CREATE TRIGGER IF NOT EXISTS source_chunks_au AFTER UPDATE ON source_chunks BEGIN
   DELETE FROM source_chunks_fts WHERE chunk_id = old.id;
-  INSERT INTO source_chunks_fts(content, chunk_id, source_id, notebook_id)
-  VALUES (new.content, new.id, new.source_id, new.notebook_id);
+  INSERT INTO source_chunks_fts(content, chunk_id, source_id, project_id)
+  VALUES (new.content, new.id, new.source_id, new.project_id);
 END;
 `;
