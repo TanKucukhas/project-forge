@@ -7,7 +7,11 @@ import {
   updateProjectGoal,
   updateProjectSettings,
 } from "@/lib/db/queries";
-import { DEFAULT_MODEL_USAGE_POLICY, DEFAULT_TRANSCRIPT_LANGUAGE } from "@/lib/settings";
+import {
+  DEFAULT_MODEL_USAGE_POLICY,
+  DEFAULT_TRANSCRIPT_LANGUAGE,
+  type ProjectSettings,
+} from "@/lib/settings";
 
 export const runtime = "nodejs";
 
@@ -29,6 +33,8 @@ const SettingsSchema = z
     modelUsagePolicy: ModelUsagePolicy.default(DEFAULT_MODEL_USAGE_POLICY),
     transcriptLanguage: TranscriptLanguage.default(DEFAULT_TRANSCRIPT_LANGUAGE),
     learnInstructions: z.string().max(20_000).default(""),
+    // Taxonomy is normalized on read (parseSettings); accept it loosely here.
+    taxonomy: z.unknown().optional(),
   })
   .default({
     modelUsagePolicy: DEFAULT_MODEL_USAGE_POLICY,
@@ -53,7 +59,12 @@ export async function POST(request: NextRequest) {
       { status: 400 },
     );
   }
-  const { id } = await createProject(parsed.data);
+  const { id } = await createProject({
+    title: parsed.data.title,
+    goal: parsed.data.goal,
+    // taxonomy normalized on read; cast past the loose `unknown` schema.
+    settings: parsed.data.settings as Partial<ProjectSettings>,
+  });
   return NextResponse.json({ project: getProject(id) }, { status: 201 });
 }
 
@@ -66,6 +77,7 @@ const PatchSchema = z.object({
       modelUsagePolicy: ModelUsagePolicy.optional(),
       transcriptLanguage: TranscriptLanguage.optional(),
       learnInstructions: z.string().max(20_000).optional(),
+      taxonomy: z.unknown().optional(),
     })
     .optional(),
 });
@@ -77,6 +89,8 @@ export async function PATCH(request: NextRequest) {
   const { id, settings, ...patch } = parsed.data;
   if (!getProject(id)) return NextResponse.json({ error: "Project not found." }, { status: 404 });
   if (patch.title !== undefined || patch.goal !== undefined) updateProjectGoal(id, patch);
-  if (settings) updateProjectSettings(id, settings);
+  // taxonomy is validated/normalized by parseSettings on read; cast past the
+  // loose `unknown` schema here.
+  if (settings) updateProjectSettings(id, settings as Partial<ProjectSettings>);
   return NextResponse.json({ project: getProject(id) });
 }

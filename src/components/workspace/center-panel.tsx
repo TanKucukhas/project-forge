@@ -24,7 +24,6 @@ import {
   useCapture,
   useCapturePdf,
   useDistill,
-  useAsk,
   useSources,
   useJobs,
   useSnapshot,
@@ -36,13 +35,17 @@ import {
   useChannelStats,
   useVideoPreview,
   type Source,
-  type AskResult,
   type ChannelVideo,
+  type LearningDoc,
+  type CurrentDistill,
 } from "@/lib/api";
 import { needsPaidConfirm, TRANSCRIPT_LANGUAGE_OPTIONS } from "@/lib/settings";
 import { ProjectsPage } from "./projects-page";
 import { GlobalSettings } from "./global-settings";
 import { LearnInstructions } from "./learn-instructions";
+import { AskPanel } from "./ask-panel";
+import { LearnedDocView } from "./learned-doc-view";
+import { docStaleness, STALE_HINT, STALE_LABEL, type Staleness } from "@/lib/staleness";
 import { getModelOption } from "@/lib/ai/models";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -74,10 +77,21 @@ const TYPE_ICON: Record<string, typeof FileText> = {
   pdf: FileText,
 };
 
-function statusVariant(status: string): "default" | "secondary" | "destructive" {
-  if (status === "processed" || status === "done" || status === "distilled") return "default";
-  if (status === "failed" || status === "error") return "destructive";
-  return "secondary";
+/** Learned/not-learned status tag shown on every source row. */
+const SOURCE_STATUS: Record<string, { label: string; cls: string }> = {
+  pending: { label: "capturing", cls: "border-amber-500/40 text-amber-600" },
+  processed: { label: "not learned", cls: "text-muted-foreground" },
+  failed: { label: "failed", cls: "border-destructive/40 text-destructive" },
+  distilled: { label: "learned", cls: "border-emerald-500/40 text-emerald-600" },
+};
+
+function SourceStatusTag({ status }: { status: string }) {
+  const t = SOURCE_STATUS[status] ?? { label: status, cls: "text-muted-foreground" };
+  return (
+    <Badge variant="outline" className={`shrink-0 font-normal ${t.cls}`}>
+      {t.label}
+    </Badge>
+  );
 }
 
 function looksLikeChannel(s: string): boolean {
@@ -147,15 +161,15 @@ export function CenterPanel() {
   const [videoPreview, setVideoPreview] = useState<ChannelVideo | null>(null);
   const PAGE = 30;
   const [selectedSources, setSelectedSources] = useState<Set<string>>(new Set());
-  const [question, setQuestion] = useState("");
-  const [askMode, setAskMode] = useState<"summaries" | "full">("summaries");
-  const [askScope, setAskScope] = useState<string>("all"); // "all" | "cat:<name>" | "src:<id>"
-  const [askResult, setAskResult] = useState<AskResult | null>(null);
+  const [expandedHistory, setExpandedHistory] = useState<Set<string>>(new Set());
+  // Optimistically mark sources just sent to Learn, so the spinner/lock shows
+  // instantly (before the ~1s jobs poll picks the job up). Auto-clears; the real
+  // queued/running job state takes over from the jobs poll.
+  const [pendingLearn, setPendingLearn] = useState<Set<string>>(new Set());
 
   const capture = useCapture(activeProjectId);
   const capturePdf = useCapturePdf(activeProjectId);
   const distill = useDistill(activeProjectId);
-  const ask = useAsk();
   const channelPreview = useChannelPreview();
   const updateProject = useUpdateProject();
   const modelUsagePolicy = useModelUsagePolicy(activeProjectId);
@@ -172,7 +186,7 @@ export function CenterPanel() {
   const { data } = useSources(activeProjectId);
   const { data: jobs } = useJobs();
 
-  const { data: docMarkdown, isLoading: docLoading } = useDoc(
+  const { data: docData, isLoading: docLoading } = useDoc(
     preview?.kind === "doc" ? preview.path : null,
   );
   const { data: snapshot, isLoading: snapLoading } = useSnapshot(
@@ -180,8 +194,12 @@ export function CenterPanel() {
   );
 
   const sources = data?.sources ?? [];
-  const categories = data?.categories ?? [];
-  const distilledSources = sources.filter((s) => s.status === "distilled");
+  const current = data?.current;
+  // Learned list shows ONE row per source (the latest doc); older re-learns are
+  // kept and surfaced under a per-row "History (n)". data.docs is newest-first.
+  const groupedDocs = groupLatestDocs(data?.docs ?? []);
+  // "To learn" lists only sources not yet distilled; "All" shows everything.
+  const notLearned = sources.filter((s) => s.status !== "distilled");
   const isChannel = looksLikeChannel(sourceUrl);
   const isVideo = looksLikeVideo(sourceUrl);
   const canCapture = (sourceUrl.trim().length > 0 || notes.trim().length > 0) && !capture.isPending;
@@ -386,8 +404,48 @@ export function CenterPanel() {
     }
   }
 
+  /** Mark a source as just-submitted (instant spinner/lock), auto-clearing after
+   *  the jobs poll has had time to surface the real queued/running job. */
+  function markPending(id: string) {
+    setPendingLearn((prev) => new Set(prev).add(id));
+    setTimeout(
+      () =>
+        setPendingLearn((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        }),
+      2500,
+    );
+  }
+
+  /** Whether a distill is in flight for this source — optimistic flag OR a real
+   *  queued/running distill job (matched by the exact "Distill: <title>" label). */
+  function learnStateOf(s: Source): "queued" | "running" | null {
+    if (pendingLearn.has(s.id)) return "running";
+    const job = jobs?.find(
+      (j) =>
+        j.kind === "distill" &&
+        j.label === `Distill: ${s.title}` &&
+        (j.status === "queued" || j.status === "running"),
+    );
+    return job ? (job.status as "queued" | "running") : null;
+  }
+
   async function onDistill(source: Source) {
+    if (learnStateOf(source)) return; // already learning — don't double-enqueue
+    // Re-learning an already-learned source regenerates it — confirm first.
+    // (The previous version is kept under the doc's History, nothing is lost.)
+    if (
+      source.status === "distilled" &&
+      !window.confirm(
+        `"${source.title}" is already learned. Regenerate it? The current version is kept under History.`,
+      )
+    ) {
+      return;
+    }
     if (!confirmPaid()) return;
+    markPending(source.id);
     try {
       await distill.mutateAsync({ sourceId: source.id, modelId });
       toast.success(`Learning "${source.title}"…`);
@@ -414,6 +472,7 @@ export function CenterPanel() {
     try {
       // One job per source — the in-process queue runs them one at a time.
       for (const id of ids) {
+        markPending(id);
         await distill.mutateAsync({ sourceId: id, modelId });
       }
       toast.success(`Learning ${ids.length} source${ids.length === 1 ? "" : "s"}…`);
@@ -423,20 +482,89 @@ export function CenterPanel() {
     }
   }
 
-  async function onAsk() {
-    if (!activeProjectId || !question.trim()) return;
-    if (!confirmPaid()) return;
-    const scope: { mode: "summaries" | "full"; sourceIds?: string[]; category?: string } = {
-      mode: askMode,
+  /** Float currently-learning sources (running, then queued) to the top; stable
+   *  sort keeps the rest in their original (newest-first) order. */
+  function sortLearningFirst(list: Source[]): Source[] {
+    const rank = (s: Source) => {
+      const st = learnStateOf(s);
+      return st === "running" ? 0 : st === "queued" ? 1 : 2;
     };
-    if (askScope.startsWith("cat:")) scope.category = askScope.slice(4);
-    else if (askScope.startsWith("src:")) scope.sourceIds = [askScope.slice(4)];
-    try {
-      const result = await ask.mutateAsync({ projectId: activeProjectId, question, modelId, scope });
-      setAskResult(result);
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Ask failed.");
-    }
+    return [...list].sort((a, b) => rank(a) - rank(b));
+  }
+
+  /** One source row, shared by the "To learn" (selectable) and "All" lists. */
+  function renderSourceRow(s: Source, selectable: boolean) {
+    const Icon = TYPE_ICON[s.type] ?? FileText;
+    const pending = s.status === "pending";
+    const learnState = learnStateOf(s);
+    const busy = learnState != null;
+    return (
+      <div
+        key={s.id}
+        className="flex items-center gap-2.5 px-3 py-2 transition-colors hover:bg-muted/50"
+      >
+        {selectable && (
+          <input
+            type="checkbox"
+            checked={selectedSources.has(s.id)}
+            onChange={() => toggleSource(s.id)}
+            disabled={pending}
+            className="size-4 shrink-0 accent-primary disabled:opacity-40"
+          />
+        )}
+        <Icon className="size-4 shrink-0 text-muted-foreground" />
+        <button
+          onClick={() => !pending && previewSnapshot(s.id)}
+          disabled={pending}
+          className="min-w-0 flex-1 text-left"
+          title="View captured text"
+        >
+          <div className="truncate text-sm font-medium">{s.title}</div>
+          <div className="flex items-center gap-1.5 truncate text-xs text-muted-foreground">
+            <span className="capitalize">{s.type}</span>
+            {s.category && <span>· {s.category}</span>}
+            {s.relevance != null && <span>· rel {s.relevance}</span>}
+            {s.credibility != null && <span>· cred {s.credibility}</span>}
+          </div>
+        </button>
+        {busy ? (
+          <Badge variant="outline" className="shrink-0 border-primary/40 font-normal text-primary">
+            <Loader2 className="mr-1 size-3 animate-spin" />
+            {learnState === "queued" ? "Queued" : "Learning…"}
+          </Badge>
+        ) : (
+          <>
+            <SourceStatusTag status={s.status} />
+            {s.status === "distilled" && (
+              <StaleBadge
+                staleness={docStaleness(
+                  { instructionHash: s.instructionHash, goalHash: s.goalHash, taxonomyHash: s.taxonomyHash },
+                  current,
+                )}
+              />
+            )}
+          </>
+        )}
+        <Button
+          size="icon-sm"
+          variant="ghost"
+          disabled={pending}
+          onClick={() => previewSnapshot(s.id)}
+          title="Preview"
+        >
+          <Eye className="size-3.5" />
+        </Button>
+        <Button
+          size="icon-sm"
+          variant="ghost"
+          disabled={pending || busy || distill.isPending}
+          onClick={() => onDistill(s)}
+          title={s.status === "distilled" ? "Re-learn" : "Learn"}
+        >
+          {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
+        </Button>
+      </div>
+    );
   }
 
   return (
@@ -921,7 +1049,19 @@ export function CenterPanel() {
                             </div>
                           )}
                           {s.status === "pending" && (
-                            <span className="absolute right-1.5 top-1.5 size-2 rounded-full bg-amber-500" />
+                            <span className="absolute right-1.5 top-1.5 rounded bg-amber-500 px-1.5 py-0.5 text-[10px] font-medium text-white">
+                              capturing
+                            </span>
+                          )}
+                          {s.status === "processed" && (
+                            <span className="absolute right-1.5 top-1.5 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-foreground/70">
+                              raw
+                            </span>
+                          )}
+                          {s.status === "failed" && (
+                            <span className="absolute right-1.5 top-1.5 rounded bg-destructive px-1.5 py-0.5 text-[10px] font-medium text-white">
+                              failed
+                            </span>
                           )}
                           {s.status === "distilled" && (
                             <span className="absolute right-1.5 top-1.5 rounded bg-emerald-600 px-1.5 py-0.5 text-[10px] font-medium text-white">
@@ -931,10 +1071,23 @@ export function CenterPanel() {
                         </div>
                         <div className="flex flex-1 flex-col gap-1 p-2.5">
                           <div className="line-clamp-2 text-sm font-medium leading-snug">{s.title}</div>
-                          <div className="mt-auto flex items-center gap-1.5 text-xs text-muted-foreground">
+                          <div className="mt-auto flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
                             <Icon className="size-3.5 shrink-0" />
                             <span className="capitalize">{s.type}</span>
+                            {s.category && <span>· {s.category}</span>}
                             {s.relevance != null && <span>· R {s.relevance}</span>}
+                            {s.status === "distilled" && (
+                              <StaleBadge
+                                staleness={docStaleness(
+                                  {
+                                    instructionHash: s.instructionHash,
+                                    goalHash: s.goalHash,
+                                    taxonomyHash: s.taxonomyHash,
+                                  },
+                                  current,
+                                )}
+                              />
+                            )}
                           </div>
                         </div>
                       </button>
@@ -958,24 +1111,37 @@ export function CenterPanel() {
               can re-learn anytime.
             </p>
 
+            <AttentionSummary docs={groupedDocs.latest} current={current} />
+
             <LearnInstructions />
 
             <Tabs defaultValue="distilled" className="mt-1">
               <TabsList variant="line">
                 <TabsTrigger value="distilled">
-                  Learned{data?.docs?.length ? ` · ${data.docs.length}` : ""}
+                  Learned{groupedDocs.latest.length ? ` · ${groupedDocs.latest.length}` : ""}
                 </TabsTrigger>
-                <TabsTrigger value="raw">Raw data</TabsTrigger>
+                <TabsTrigger value="raw">
+                  To learn{notLearned.length ? ` · ${notLearned.length}` : ""}
+                </TabsTrigger>
+                <TabsTrigger value="all">
+                  All{sources.length ? ` · ${sources.length}` : ""}
+                </TabsTrigger>
               </TabsList>
 
+              {/* TO LEARN — only sources not yet distilled */}
               <TabsContent value="raw" className="mt-3 space-y-2">
             {sources.length === 0 ? (
               <Card className="p-6 text-sm text-muted-foreground">
                 No sources captured yet. Add some in the <strong>Capture</strong> tab.
               </Card>
+            ) : notLearned.length === 0 ? (
+              <Card className="p-6 text-sm text-muted-foreground">
+                Everything captured has been learned. 🎉 See <strong>Learned</strong> or{" "}
+                <strong>All</strong>.
+              </Card>
             ) : (
               (() => {
-                const distillable = sources.filter((s) => s.status !== "pending");
+                const distillable = notLearned.filter((s) => s.status !== "pending");
                 const allSelected =
                   distillable.length > 0 && distillable.every((s) => selectedSources.has(s.id));
                 const toggleAll = () =>
@@ -1014,75 +1180,8 @@ export function CenterPanel() {
                       </Button>
                     </div>
 
-                    {/* Compact source rows */}
                     <div className="divide-y overflow-hidden rounded-lg border bg-card">
-                      {sources.map((s) => {
-                        const Icon = TYPE_ICON[s.type] ?? FileText;
-                        const pending = s.status === "pending";
-                        const busy =
-                          jobs?.some(
-                            (j) =>
-                              j.kind === "distill" &&
-                              j.label.includes(s.title) &&
-                              (j.status === "queued" || j.status === "running"),
-                          ) ?? false;
-                        return (
-                          <div
-                            key={s.id}
-                            className="flex items-center gap-2.5 px-3 py-2 transition-colors hover:bg-muted/50"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={selectedSources.has(s.id)}
-                              onChange={() => toggleSource(s.id)}
-                              disabled={pending}
-                              className="size-4 shrink-0 accent-primary disabled:opacity-40"
-                            />
-                            <Icon className="size-4 shrink-0 text-muted-foreground" />
-                            <button
-                              onClick={() => !pending && previewSnapshot(s.id)}
-                              disabled={pending}
-                              className="min-w-0 flex-1 text-left"
-                              title="View captured text"
-                            >
-                              <div className="truncate text-sm font-medium">{s.title}</div>
-                              <div className="flex items-center gap-1.5 truncate text-xs text-muted-foreground">
-                                <span className="capitalize">{s.type}</span>
-                                {s.category && <span>· {s.category}</span>}
-                                {s.relevance != null && <span>· rel {s.relevance}</span>}
-                                {s.credibility != null && <span>· cred {s.credibility}</span>}
-                              </div>
-                            </button>
-                            {(s.status === "failed" || pending) && (
-                              <Badge variant={statusVariant(s.status)} className="font-normal">
-                                {s.status}
-                              </Badge>
-                            )}
-                            <Button
-                              size="icon-sm"
-                              variant="ghost"
-                              disabled={pending}
-                              onClick={() => previewSnapshot(s.id)}
-                              title="Preview"
-                            >
-                              <Eye className="size-3.5" />
-                            </Button>
-                            <Button
-                              size="icon-sm"
-                              variant="ghost"
-                              disabled={pending || busy || distill.isPending}
-                              onClick={() => onDistill(s)}
-                              title={s.status === "distilled" ? "Re-learn" : "Learn"}
-                            >
-                              {busy ? (
-                                <Loader2 className="size-3.5 animate-spin" />
-                              ) : (
-                                <Sparkles className="size-3.5" />
-                              )}
-                            </Button>
-                          </div>
-                        );
-                      })}
+                      {sortLearningFirst(notLearned).map((s) => renderSourceRow(s, true))}
                     </div>
                   </div>
                 );
@@ -1090,47 +1189,97 @@ export function CenterPanel() {
             )}
               </TabsContent>
 
-              <TabsContent value="distilled" className="mt-3 space-y-2">
-            {data?.docs && data.docs.length > 0 ? (
+              {/* ALL — every source in one place, tagged learned / not learned */}
+              <TabsContent value="all" className="mt-3 space-y-2">
+            {sources.length === 0 ? (
+              <Card className="p-6 text-sm text-muted-foreground">
+                No sources captured yet. Add some in the <strong>Capture</strong> tab.
+              </Card>
+            ) : (
               <div className="divide-y overflow-hidden rounded-lg border bg-card">
-                {data.docs.map((d) => {
+                {sortLearningFirst(sources).map((s) => renderSourceRow(s, false))}
+              </div>
+            )}
+              </TabsContent>
+
+              <TabsContent value="distilled" className="mt-3 space-y-2">
+            {groupedDocs.latest.length > 0 ? (
+              <div className="divide-y overflow-hidden rounded-lg border bg-card">
+                {groupedDocs.latest.map((d) => {
                   const src = sources.find((s) => s.id === d.sourceId);
-                  const busy =
-                    jobs?.some(
-                      (j) =>
-                        j.kind === "distill" &&
-                        src != null &&
-                        j.label.includes(src.title) &&
-                        (j.status === "queued" || j.status === "running"),
-                    ) ?? false;
+                  const busy = src ? learnStateOf(src) != null : false;
+                  const stale = docStaleness(d, current);
+                  const key = d.sourceId ?? `doc:${d.id}`;
+                  const older = groupedDocs.history.get(key) ?? [];
+                  const historyOpen = expandedHistory.has(key);
                   return (
-                    <div
-                      key={d.id}
-                      className="flex items-center gap-2 px-3 py-2.5 text-sm transition-colors hover:bg-muted/50"
-                    >
-                      <FileText className="size-4 shrink-0 text-muted-foreground" />
-                      <button
-                        onClick={() => previewDoc(d.markdownPath)}
-                        className="min-w-0 flex-1 truncate text-left font-medium"
-                        title="Open"
-                      >
-                        {d.title}
-                      </button>
-                      {src && (
-                        <Button
-                          size="icon-sm"
-                          variant="ghost"
-                          disabled={busy || distill.isPending}
-                          onClick={() => onDistill(src)}
-                          title="Re-learn"
-                        >
-                          {busy ? (
-                            <Loader2 className="size-3.5 animate-spin" />
-                          ) : (
-                            <Sparkles className="size-3.5" />
-                          )}
-                        </Button>
-                      )}
+                    <div key={d.id} className="text-sm">
+                      <div className="flex items-center gap-2 px-3 py-2.5 transition-colors hover:bg-muted/50">
+                        <FileText className="size-4 shrink-0 text-muted-foreground" />
+                        <div className="min-w-0 flex-1">
+                          <button
+                            onClick={() => previewDoc(d.markdownPath)}
+                            className="block w-full truncate text-left font-medium"
+                            title="Open latest"
+                          >
+                            {d.title}
+                          </button>
+                          <div className="flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
+                            <span>Latest</span>
+                            {d.learnSchemaVersion != null && <span>· schema v{d.learnSchemaVersion}</span>}
+                            {d.relevance != null && <span>· {d.relevance}/100</span>}
+                            {d.utility && <span>· {d.utility}</span>}
+                            {older.length > 0 && (
+                              <button
+                                onClick={() =>
+                                  setExpandedHistory((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(key)) next.delete(key);
+                                    else next.add(key);
+                                    return next;
+                                  })
+                                }
+                                className="underline hover:text-foreground"
+                              >
+                                · History ({older.length})
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        <StaleBadge staleness={stale} />
+                        {src && (
+                          <Button
+                            size="icon-sm"
+                            variant="ghost"
+                            disabled={busy || distill.isPending}
+                            onClick={() => onDistill(src)}
+                            title="Re-learn"
+                          >
+                            {busy ? (
+                              <Loader2 className="size-3.5 animate-spin" />
+                            ) : (
+                              <Sparkles className="size-3.5" />
+                            )}
+                          </Button>
+                        )}
+                      </div>
+                      {/* Older re-learns (kept in storage, hidden by default) */}
+                      {historyOpen &&
+                        older.map((h) => (
+                          <button
+                            key={h.id}
+                            onClick={() => previewDoc(h.markdownPath)}
+                            className="flex w-full items-center gap-2 border-t bg-muted/20 px-3 py-1.5 pl-10 text-left text-xs text-muted-foreground hover:bg-muted/40"
+                            title="Open older version"
+                          >
+                            <span className="flex-1 truncate">
+                              {h.distilledAt ? h.distilledAt.slice(0, 16).replace("T", " ") : h.createdAt.slice(0, 10)}
+                              {h.learnSchemaVersion != null ? ` · schema v${h.learnSchemaVersion}` : ""}
+                              {h.relevance != null ? ` · ${h.relevance}/100` : ""}
+                            </span>
+                            <StaleBadge staleness={docStaleness(h, current)} />
+                          </button>
+                        ))}
                     </div>
                   );
                 })}
@@ -1144,63 +1293,9 @@ export function CenterPanel() {
             </Tabs>
           </TabsContent>
 
-          {/* ASK — scoped retrieval */}
-          <TabsContent value="ask" className="mt-0 space-y-4">
-            <p className="text-sm text-muted-foreground">
-              Choose how much context to spend: learned summaries (cheap) or full transcripts
-              (precise), across all sources, a category, or one source.
-            </p>
-
-            <div className="flex flex-wrap gap-2">
-              <Select value={askMode} onValueChange={(v) => setAskMode(v as "summaries" | "full")}>
-                <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="summaries">Learned summaries</SelectItem>
-                  <SelectItem value="full">Full transcripts</SelectItem>
-                </SelectContent>
-              </Select>
-              <Select value={askScope} onValueChange={setAskScope}>
-                <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All sources</SelectItem>
-                  {categories.map((c) => (
-                    <SelectItem key={c.id} value={`cat:${c.name}`}>Category: {c.name}</SelectItem>
-                  ))}
-                  {(askMode === "summaries" ? distilledSources : sources).map((s) => (
-                    <SelectItem key={s.id} value={`src:${s.id}`}>{s.title.slice(0, 40)}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="flex gap-2">
-              <Input
-                placeholder="What game ideas / mechanics emerge from these sources?"
-                value={question}
-                onChange={(e) => setQuestion(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && question.trim() && !ask.isPending && onAsk()}
-              />
-              <Button onClick={onAsk} disabled={!question.trim() || ask.isPending}>
-                {ask.isPending ? <Loader2 className="size-4 animate-spin" /> : "Ask"}
-              </Button>
-            </div>
-
-            {ask.isPending && <LoadingLine />}
-            {askResult && !ask.isPending && (
-              <Card className="space-y-3 p-4">
-                <Markdown>{askResult.answer}</Markdown>
-                {askResult.usedSources.length > 0 && (
-                  <div className="flex flex-wrap items-center gap-1.5 border-t pt-3 text-xs text-muted-foreground">
-                    <span>Sources ({askResult.mode}):</span>
-                    {askResult.usedSources.map((u) => (
-                      <Badge key={u.id} variant="outline" className="font-normal">
-                        {u.title.slice(0, 36)}
-                      </Badge>
-                    ))}
-                  </div>
-                )}
-              </Card>
-            )}
+          {/* ASK — knowledge command center (see ask-panel.tsx) */}
+          <TabsContent value="ask" className="mt-0">
+            <AskPanel />
           </TabsContent>
 
           <TabsContent value="projects" className="mt-0">
@@ -1219,9 +1314,36 @@ export function CenterPanel() {
           {!preview ? null : preview.kind === "doc" ? (
             <>
               <DialogHeader>
-                <DialogTitle className="pr-8">Learned document</DialogTitle>
+                <DialogTitle className="pr-8">{docData?.frontmatter?.title as string ?? "Learned document"}</DialogTitle>
               </DialogHeader>
-              {docLoading ? <LoadingLine /> : <Markdown>{docMarkdown ?? ""}</Markdown>}
+              {docLoading || !docData ? (
+                <LoadingLine />
+              ) : (
+                <LearnedDocView
+                  doc={docData}
+                  staleness={docStaleness(
+                    {
+                      instructionHash:
+                        typeof docData.frontmatter.instruction_hash === "string"
+                          ? docData.frontmatter.instruction_hash
+                          : null,
+                      goalHash:
+                        typeof docData.frontmatter.goal_hash === "string"
+                          ? docData.frontmatter.goal_hash
+                          : null,
+                      taxonomyHash:
+                        typeof docData.frontmatter.taxonomy_hash === "string"
+                          ? docData.frontmatter.taxonomy_hash
+                          : null,
+                      learnSchemaVersion:
+                        typeof docData.frontmatter.learn_schema_version === "number"
+                          ? docData.frontmatter.learn_schema_version
+                          : null,
+                    },
+                    current,
+                  )}
+                />
+              )}
             </>
           ) : snapLoading ? (
             <>
@@ -1339,6 +1461,90 @@ function LoadingLine() {
     <div className="flex items-center gap-2 text-sm text-muted-foreground">
       <Loader2 className="size-4 animate-spin" /> Working…
     </div>
+  );
+}
+
+/** Group learned docs to ONE latest row per source; older re-learns go to
+ *  `history` (kept, not deleted). `docs` must be newest-first (listDocs is). */
+function groupLatestDocs(docs: LearningDoc[]): {
+  latest: LearningDoc[];
+  history: Map<string, LearningDoc[]>;
+} {
+  const latest: LearningDoc[] = [];
+  const history = new Map<string, LearningDoc[]>();
+  const seen = new Set<string>();
+  for (const d of docs) {
+    const key = d.sourceId ?? `doc:${d.id}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      latest.push(d);
+    } else {
+      const arr = history.get(key) ?? [];
+      arr.push(d);
+      history.set(key, arr);
+    }
+  }
+  return { latest, history };
+}
+
+/** A learned doc flags entity review if its distill metadata said so. */
+function needsEntityReview(d: LearningDoc): boolean {
+  if (!d.metadataJson) return false;
+  try {
+    return (JSON.parse(d.metadataJson) as { needs_entity_review?: boolean }).needs_entity_review === true;
+  } catch {
+    return false;
+  }
+}
+
+/** Count-based doc-health banner: says exactly WHAT needs attention (instruction-
+ *  stale / taxonomy-stale / older format / unversioned / entity review), not a
+ *  vague "something's wrong". Computed over the latest doc per source. */
+function AttentionSummary({ docs, current }: { docs: LearningDoc[]; current?: CurrentDistill }) {
+  const c = { instructions: 0, goal: 0, metadata: 0, schema: 0, unknown: 0, entity: 0 };
+  for (const d of docs) {
+    const s = docStaleness(d, current);
+    if (s === "instructions") c.instructions += 1;
+    else if (s === "goal") c.goal += 1;
+    else if (s === "metadata") c.metadata += 1;
+    else if (s === "schema") c.schema += 1;
+    else if (s === "unknown") c.unknown += 1;
+    if (needsEntityReview(d)) c.entity += 1;
+  }
+  const parts: string[] = [];
+  if (c.instructions) parts.push(`${c.instructions} instruction-stale`);
+  if (c.goal) parts.push(`${c.goal} goal-stale`);
+  if (c.metadata) parts.push(`${c.metadata} taxonomy-stale`);
+  if (c.schema) parts.push(`${c.schema} older format`);
+  if (c.unknown) parts.push(`${c.unknown} unversioned`);
+  if (c.entity) parts.push(`${c.entity} entity review`);
+  if (!parts.length) return null;
+  return (
+    <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-700">
+      <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
+      <span>
+        <span className="font-medium">Needs attention:</span> {parts.join(", ")}.{" "}
+        <span className="text-amber-700/80">Re-learn a source to refresh it — nothing runs automatically.</span>
+      </span>
+    </div>
+  );
+}
+
+/** Subtle "this learned doc is out of date" marker. Nothing for fresh docs.
+ *  Metadata-stale (taxonomy changed) is softer (blue) than full-stale (amber). */
+function StaleBadge({ staleness }: { staleness: Staleness }) {
+  if (staleness === "fresh") return null;
+  const soft = staleness === "metadata";
+  return (
+    <Badge
+      variant="outline"
+      className={`shrink-0 text-[10px] font-normal ${
+        soft ? "border-sky-500/50 text-sky-600" : "border-amber-500/50 text-amber-600"
+      }`}
+      title={STALE_HINT[staleness]}
+    >
+      ⚠ {STALE_LABEL[staleness]}
+    </Badge>
   );
 }
 

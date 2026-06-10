@@ -3,15 +3,8 @@
 import { Target } from "lucide-react";
 import { useWorkspace } from "@/lib/store";
 import { useProjects, useModelUsagePolicy } from "@/lib/api";
-import { availableModels, isPaidModel } from "@/lib/settings";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { QueueStatus } from "./queue-status";
+import { ModelPicker } from "./model-picker";
 import type { CenterMode } from "@/lib/types";
 
 const TITLES: Record<CenterMode, { title: string; subtitle: string }> = {
@@ -23,7 +16,7 @@ const TITLES: Record<CenterMode, { title: string; subtitle: string }> = {
 };
 
 export function Topbar() {
-  const { activeProjectId, centerMode, modelId, setModel } = useWorkspace();
+  const { activeProjectId, centerMode } = useWorkspace();
   const { data: projects } = useProjects();
   const modelUsagePolicy = useModelUsagePolicy(activeProjectId);
 
@@ -47,21 +40,7 @@ export function Topbar() {
 
       <div className="flex items-center gap-3">
         <QueueStatus />
-        {showModel && (
-          <Select value={modelId} onValueChange={setModel}>
-            <SelectTrigger className="h-8 w-52 text-xs">
-              <SelectValue placeholder="Model" />
-            </SelectTrigger>
-            <SelectContent>
-              {availableModels(modelUsagePolicy).map((m) => (
-                <SelectItem key={m.id} value={m.id}>
-                  {m.label}
-                  {isPaidModel(m.id) ? " · paid" : ""}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        )}
+        {showModel && <ModelPicker policy={modelUsagePolicy} />}
       </div>
     </header>
   );

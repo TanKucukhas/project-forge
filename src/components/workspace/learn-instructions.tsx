@@ -103,7 +103,7 @@ export function LearnInstructions() {
             Full prompt preview (read-only)
           </summary>
           <pre className="overflow-x-auto whitespace-pre-wrap px-3 pb-3 text-[11px] leading-relaxed text-foreground/70">
-            {buildLearnInstructions(goal, draft)}
+            {buildLearnInstructions(goal, draft, settings.taxonomy.categories)}
           </pre>
         </details>
       </div>

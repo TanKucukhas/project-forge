@@ -15,9 +15,12 @@ import { join } from "node:path";
  * on Edge).
  */
 
-const LOCAL_TIMEOUT_MS = 120_000;
+// Local CLI generations can be slow — the richer distill prompt (taxonomy +
+// structured metadata + multi-section summary) makes a long transcript take
+// minutes. Default 5 min; override with LOCAL_AI_TIMEOUT_MS (ms) for big sources.
+const LOCAL_TIMEOUT_MS = Number(process.env.LOCAL_AI_TIMEOUT_MS) || 300_000;
 
-export type LocalProvider = "codex" | "claude";
+export type LocalProvider = "codex" | "claude" | "gemini-cli";
 
 /** Validate a CLI model name to prevent argument injection. Returns null for "default". */
 export function normalizeCliModel(model: string | undefined): string | null {
@@ -82,7 +85,11 @@ export function runCodex(prompt: string, model: string | null): Promise<string> 
   });
 }
 
-export function runClaude(prompt: string, model: string | null): Promise<string> {
+export function runClaude(
+  prompt: string,
+  model: string | null,
+  onDelta?: (text: string) => void,
+): Promise<string> {
   const claudePath = process.env.CLAUDE_CLI_PATH ?? "claude";
   const args = [
     "-p",
@@ -105,15 +112,49 @@ export function runClaude(prompt: string, model: string | null): Promise<string>
     stdio: ["pipe", "pipe", "pipe"],
   });
 
-  return collectProcessOutput(child, prompt, LOCAL_TIMEOUT_MS, async (stdout) => stdout.trim());
+  return collectProcessOutput(child, prompt, LOCAL_TIMEOUT_MS, async (stdout) => stdout.trim(), onDelta);
+}
+
+/**
+ * Google's Gemini CLI in non-interactive mode: `gemini -p "<prompt>" -m <model>`.
+ * Uses your local Gemini login (no API key). The prompt is passed as an argv
+ * value (shell:false → no interpolation); stdin is left empty. stdout streams,
+ * so onDelta forwards chunks like Claude. Experimental — output may include CLI
+ * preamble lines depending on version.
+ */
+export function runGeminiCli(
+  prompt: string,
+  model: string | null,
+  onDelta?: (text: string) => void,
+): Promise<string> {
+  const geminiPath = process.env.GEMINI_CLI_PATH ?? "gemini";
+  // --skip-trust: required for headless runs in an untrusted dir.
+  const args = ["--skip-trust", "-p", prompt, ...(model ? ["-m", model] : [])];
+
+  const child = spawn(geminiPath, args, {
+    // Run in a neutral tmp dir so the CLI doesn't ingest the project's files as
+    // context (it auto-scans its working directory). Our prompt is self-contained.
+    cwd: tmpdir(),
+    env: { ...process.env, NO_COLOR: "1" },
+    shell: false,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+
+  // Prompt is already in argv — don't also pipe it to stdin (it would append).
+  return collectProcessOutput(child, "", LOCAL_TIMEOUT_MS, async (stdout) => stdout.trim(), onDelta);
 }
 
 export function runLocalAi(
   provider: LocalProvider,
   prompt: string,
   model: string | null,
+  onDelta?: (text: string) => void,
 ): Promise<string> {
-  return provider === "codex" ? runCodex(prompt, model) : runClaude(prompt, model);
+  // Codex returns its final message via a file, so it can't stream incrementally;
+  // Claude + Gemini CLIs stream stdout, so we forward chunks via onDelta.
+  if (provider === "codex") return runCodex(prompt, model);
+  if (provider === "gemini-cli") return runGeminiCli(prompt, model, onDelta);
+  return runClaude(prompt, model, onDelta);
 }
 
 function collectProcessOutput(
@@ -121,6 +162,7 @@ function collectProcessOutput(
   stdin: string,
   timeoutMs: number,
   readFinalOutput: (stdout: string) => Promise<string>,
+  onData?: (text: string) => void,
 ): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     let stdout = "";
@@ -133,7 +175,9 @@ function collectProcessOutput(
     }, timeoutMs);
 
     child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf8");
+      const text = chunk.toString("utf8");
+      stdout += text;
+      onData?.(text); // forward for streaming UIs
     });
     child.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString("utf8");

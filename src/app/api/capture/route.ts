@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { enqueue } from "@/lib/queue/queue";
-import { runCapture } from "@/lib/queue/jobs";
+import { enqueueJob } from "@/lib/queue/queue";
+import { ensureQueueReady } from "@/lib/queue/handlers";
 import { isChannelInput, listChannelVideos } from "@/lib/capture/channel";
 import { getProject } from "@/lib/db/queries";
 
@@ -34,10 +34,11 @@ export async function POST(request: NextRequest) {
   if (!getProject(projectId)) {
     return NextResponse.json({ error: "Unknown project." }, { status: 404 });
   }
+  ensureQueueReady();
 
   // Explicit multi-select (the channel preview → confirm path): one job per url.
   if (urls && urls.length) {
-    const jobIds = urls.map((u) => enqueue("capture", u, () => runCapture({ projectId, url: u })).id);
+    const jobIds = urls.map((u) => enqueueJob("capture", u, { projectId, url: u }).id);
     return NextResponse.json({ batch: true, count: jobIds.length, jobIds }, { status: 202 });
   }
 
@@ -53,8 +54,7 @@ export async function POST(request: NextRequest) {
       );
     }
     const jobIds = videos.map(
-      (v) =>
-        enqueue("capture", v.title, () => runCapture({ projectId, url: v.url, title: v.title })).id,
+      (v) => enqueueJob("capture", v.title, { projectId, url: v.url, title: v.title }).id,
     );
     return NextResponse.json(
       { channel: true, count: videos.length, jobIds },
@@ -63,6 +63,6 @@ export async function POST(request: NextRequest) {
   }
 
   const label = title || url || "Pasted note";
-  const job = enqueue("capture", label, () => runCapture({ projectId, url, notes, title }));
+  const job = enqueueJob("capture", label, { projectId, url, notes, title });
   return NextResponse.json({ jobId: job.id, status: job.status }, { status: 202 });
 }

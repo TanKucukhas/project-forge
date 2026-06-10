@@ -20,6 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { KnowledgeTaxonomy } from "./knowledge-taxonomy";
 
 /** Editable settings for one project. Defaults to the active project, but any
  *  project id can be passed (e.g. from the Projects page settings dialog). */
@@ -109,6 +110,8 @@ export function ProjectSettings({ projectId }: { projectId?: string } = {}) {
           );
         })}
       </div>
+
+      <KnowledgeTaxonomy projectId={project.id} />
     </div>
   );
 }

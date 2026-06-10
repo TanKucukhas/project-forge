@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getModelOption, isLocalProvider, isLocalRequestHost } from "@/lib/ai";
-import { enqueue } from "@/lib/queue/queue";
-import { runDistill } from "@/lib/queue/jobs";
+import { providerThrottleMs } from "@/lib/ai/models";
+import { enqueueJob } from "@/lib/queue/queue";
+import { ensureQueueReady } from "@/lib/queue/handlers";
 import { getSource } from "@/lib/db/queries";
 
 // Distill spawns a (possibly local CLI) model — Node runtime only.
@@ -38,8 +39,12 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const job = enqueue("distill", `Distill: ${source.title}`, () =>
-    runDistill({ sourceId, modelId, instructions }),
+  ensureQueueReady();
+  const job = enqueueJob(
+    "distill",
+    `Distill: ${source.title}`,
+    { sourceId, modelId, instructions },
+    { throttleMs: providerThrottleMs(model.provider) },
   );
   return NextResponse.json({ jobId: job.id, status: job.status }, { status: 202 });
 }

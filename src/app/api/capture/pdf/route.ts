@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { enqueue } from "@/lib/queue/queue";
+import { ensureQueueReady } from "@/lib/queue/handlers";
 import { runCapturePdf } from "@/lib/queue/jobs";
 import { getProject } from "@/lib/db/queries";
 
@@ -37,6 +38,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "PDF is too large (max 25 MB)." }, { status: 413 });
   }
 
+  ensureQueueReady();
   const data = new Uint8Array(await file.arrayBuffer());
   const job = enqueue("capture", title || file.name, () =>
     runCapturePdf({ projectId, filename: file.name, title, data }),

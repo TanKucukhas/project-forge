@@ -9,6 +9,7 @@ import { eq, and, desc, inArray, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { ensureProject } from "@/lib/library/store";
 import { chunkText } from "@/lib/chunk";
+import { normalizeAuthorSlug, normalizeEntitySlug } from "@/lib/taxonomy";
 import type { SourceType } from "@/lib/types";
 import {
   DEFAULT_MODEL_USAGE_POLICY,
@@ -25,7 +26,7 @@ export function newId(): string {
 export async function createProject(input: {
   title: string;
   goal: string;
-  settings?: ProjectSettings;
+  settings?: Partial<ProjectSettings>;
 }): Promise<{ id: string }> {
   const id = newId();
   const now = new Date().toISOString();
@@ -117,6 +118,13 @@ export function updateSource(
     relevance: number;
     distilledPath: string;
     tags: string;
+    utility: string;
+    instructionHash: string;
+    goalHash: string;
+    taxonomyHash: string;
+    distilledAt: string;
+    model: string;
+    metadataJson: string;
   }>,
 ): void {
   db.update(schema.sources).set(patch).where(eq(schema.sources.id, id)).run();
@@ -216,6 +224,15 @@ export function listCategories(projectId: string) {
     .all();
 }
 
+export function listTags(projectId: string) {
+  return db
+    .select()
+    .from(schema.tags)
+    .where(eq(schema.tags.projectId, projectId))
+    .orderBy(schema.tags.name)
+    .all();
+}
+
 // ── Learning / distilled docs ────────────────────────────────────────────────
 
 export function createDoc(input: {
@@ -225,6 +242,19 @@ export function createDoc(input: {
   title: string;
   markdownPath: string;
   summary: string;
+  // Phase 1/2 provenance + metadata (mirrored from the doc frontmatter).
+  category?: string | null;
+  relevance?: number | null;
+  utility?: string | null;
+  instructionHash?: string | null;
+  goalHash?: string | null;
+  taxonomyHash?: string | null;
+  goalVersion?: number | null;
+  learnSchemaVersion?: number | null;
+  distilledAt?: string | null;
+  model?: string | null;
+  parseStatus?: string | null;
+  metadataJson?: string | null;
 }): string {
   const id = newId();
   db.insert(schema.learningDocs)
@@ -236,6 +266,18 @@ export function createDoc(input: {
       title: input.title,
       markdownPath: input.markdownPath,
       summary: input.summary,
+      category: input.category ?? null,
+      relevance: input.relevance ?? null,
+      utility: input.utility ?? null,
+      instructionHash: input.instructionHash ?? null,
+      goalHash: input.goalHash ?? null,
+      taxonomyHash: input.taxonomyHash ?? null,
+      goalVersion: input.goalVersion ?? null,
+      learnSchemaVersion: input.learnSchemaVersion ?? null,
+      distilledAt: input.distilledAt ?? null,
+      model: input.model ?? null,
+      parseStatus: input.parseStatus ?? null,
+      metadataJson: input.metadataJson ?? null,
       createdAt: new Date().toISOString(),
     })
     .run();
@@ -318,4 +360,313 @@ export function sourceIdsForCategory(projectId: string, category: string): strin
 export function getSourcesByIds(ids: string[]) {
   if (!ids.length) return [];
   return db.select().from(schema.sources).where(inArray(schema.sources.id, ids)).all();
+}
+
+// ── Authors / entities (Phase 4) ─────────────────────────────────────────────
+
+export type EntityType = "person" | "game" | "studio" | "book" | "concept" | "mechanic" | "other";
+
+/** Find-or-create an author by slug within a project; returns its id. */
+export function ensureAuthor(projectId: string, name: string): string | null {
+  const display = name.trim();
+  const slug = normalizeAuthorSlug(display);
+  if (!slug) return null;
+  const now = new Date().toISOString();
+  db.insert(schema.authors)
+    .values({ id: newId(), projectId, displayName: display, slug, createdAt: now, updatedAt: now })
+    .onConflictDoNothing()
+    .run();
+  return (
+    db
+      .select({ id: schema.authors.id })
+      .from(schema.authors)
+      .where(and(eq(schema.authors.projectId, projectId), eq(schema.authors.slug, slug)))
+      .get()?.id ?? null
+  );
+}
+
+export function linkSourceAuthor(
+  sourceId: string,
+  authorId: string,
+  role?: string,
+  confidence?: string,
+): void {
+  db.insert(schema.sourceAuthors)
+    .values({ sourceId, authorId, role: role ?? null, confidence: confidence ?? null })
+    .onConflictDoNothing()
+    .run();
+}
+
+/** Find-or-create an entity by (type, slug) within a project; returns its id. */
+export function ensureEntity(projectId: string, type: EntityType, name: string): string | null {
+  const display = name.trim();
+  const slug = normalizeEntitySlug(display);
+  if (!slug) return null;
+  const now = new Date().toISOString();
+  db.insert(schema.entities)
+    .values({ id: newId(), projectId, type, name: display, slug, createdAt: now, updatedAt: now })
+    .onConflictDoNothing()
+    .run();
+  return (
+    db
+      .select({ id: schema.entities.id })
+      .from(schema.entities)
+      .where(
+        and(
+          eq(schema.entities.projectId, projectId),
+          eq(schema.entities.type, type),
+          eq(schema.entities.slug, slug),
+        ),
+      )
+      .get()?.id ?? null
+  );
+}
+
+export function linkSourceEntity(
+  sourceId: string,
+  entityId: string,
+  relation: string,
+  confidence?: string,
+): void {
+  db.insert(schema.sourceEntities)
+    .values({ sourceId, entityId, relation, confidence: confidence ?? null })
+    .onConflictDoNothing()
+    .run();
+}
+
+/** Remove all author/entity links for a source — called before re-populating on
+ *  re-distill so importance tiers can't accumulate stale rows. */
+export function clearSourceGraph(sourceId: string): void {
+  db.delete(schema.sourceAuthors).where(eq(schema.sourceAuthors.sourceId, sourceId)).run();
+  db.delete(schema.sourceEntities).where(eq(schema.sourceEntities.sourceId, sourceId)).run();
+}
+
+export function listAuthors(projectId: string) {
+  return db
+    .select()
+    .from(schema.authors)
+    .where(eq(schema.authors.projectId, projectId))
+    .orderBy(schema.authors.displayName)
+    .all();
+}
+
+export function listEntities(projectId: string, type?: EntityType) {
+  const where = type
+    ? and(eq(schema.entities.projectId, projectId), eq(schema.entities.type, type))
+    : eq(schema.entities.projectId, projectId);
+  return db.select().from(schema.entities).where(where).orderBy(schema.entities.name).all();
+}
+
+/** Source ids tied to an author slug (any role). */
+export function sourceIdsForAuthorSlug(projectId: string, slug: string): string[] {
+  const author = db
+    .select({ id: schema.authors.id })
+    .from(schema.authors)
+    .where(and(eq(schema.authors.projectId, projectId), eq(schema.authors.slug, slug)))
+    .get();
+  if (!author) return [];
+  return db
+    .select({ id: schema.sourceAuthors.sourceId })
+    .from(schema.sourceAuthors)
+    .where(eq(schema.sourceAuthors.authorId, author.id))
+    .all()
+    .map((r) => r.id);
+}
+
+/** Source ids tied to an entity slug (optionally constrained to a type). */
+export function sourceIdsForEntitySlug(
+  projectId: string,
+  slug: string,
+  type?: EntityType,
+): string[] {
+  const where = type
+    ? and(
+        eq(schema.entities.projectId, projectId),
+        eq(schema.entities.type, type),
+        eq(schema.entities.slug, slug),
+      )
+    : and(eq(schema.entities.projectId, projectId), eq(schema.entities.slug, slug));
+  const ent = db.select({ id: schema.entities.id }).from(schema.entities).where(where).get();
+  if (!ent) return [];
+  return db
+    .select({ id: schema.sourceEntities.sourceId })
+    .from(schema.sourceEntities)
+    .where(eq(schema.sourceEntities.entityId, ent.id))
+    .all()
+    .map((r) => r.id);
+}
+
+/** Source ids carrying a given tag name (kebab slug stored in tags table). */
+export function sourceIdsForTag(projectId: string, tagName: string): string[] {
+  const tag = db
+    .select({ id: schema.tags.id })
+    .from(schema.tags)
+    .where(and(eq(schema.tags.projectId, projectId), eq(schema.tags.name, tagName)))
+    .get();
+  if (!tag) return [];
+  return db
+    .select({ id: schema.sourceTags.sourceId })
+    .from(schema.sourceTags)
+    .where(eq(schema.sourceTags.tagId, tag.id))
+    .all()
+    .map((r) => r.id);
+}
+
+// ── Source metadata FTS (Phase 5) ────────────────────────────────────────────
+
+/** Replace the meta-FTS row(s) for a source with the given searchable terms
+ *  (tags + key_terms + synonyms + entity names). No triggers on this FTS table,
+ *  so we manage rows directly. */
+export function upsertSourceMeta(sourceId: string, projectId: string, terms: string): void {
+  db.run(sql`DELETE FROM source_meta_fts WHERE source_id = ${sourceId}`);
+  const clean = terms.trim();
+  if (!clean) return;
+  db.run(sql`
+    INSERT INTO source_meta_fts (terms, source_id, project_id)
+    VALUES (${clean}, ${sourceId}, ${projectId})
+  `);
+}
+
+/** Find sources whose metadata (tags/terms/synonyms/entities) match the query —
+ *  catches conceptually-relevant sources the transcript text alone would miss. */
+export function searchMetaSources(
+  projectId: string,
+  query: string,
+  sourceIds: string[] | null,
+  limit = 8,
+): { sourceId: string; rank: number }[] {
+  const trimmed = query.trim();
+  if (!trimmed) return [];
+  const matchExpr = trimmed
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((t) => `"${t.replace(/"/g, "")}"`)
+    .join(" OR ");
+  if (!matchExpr) return [];
+  const scopeClause =
+    sourceIds && sourceIds.length
+      ? sql`AND source_id IN (${sql.join(
+          sourceIds.map((id) => sql`${id}`),
+          sql`, `,
+        )})`
+      : sql``;
+  const rows = db.all(sql`
+    SELECT source_id, rank FROM source_meta_fts
+    WHERE source_meta_fts MATCH ${matchExpr}
+      AND project_id = ${projectId}
+      ${scopeClause}
+    ORDER BY rank
+    LIMIT ${limit}
+  `) as Array<{ source_id: string; rank: number }>;
+  return rows.map((r) => ({ sourceId: r.source_id, rank: r.rank }));
+}
+
+// ── Retrieval logging (Phase 6) ──────────────────────────────────────────────
+
+export type RetrievalItem = {
+  sourceId?: string | null;
+  chunkId?: string | null;
+  learningDocId?: string | null;
+  title?: string | null;
+  rank?: number | null;
+  score?: number | null;
+  matchType?: string | null;
+  matchedTerms?: string[];
+  metadata?: Record<string, unknown>;
+};
+
+/** Persist a retrieval run + its items; returns the run id. Best-effort logging
+ *  — callers should not let a logging failure break Ask/Generate. */
+export function logRetrieval(input: {
+  projectId: string;
+  mode: string;
+  query: string;
+  filters?: Record<string, unknown>;
+  contextCharCount: number;
+  items: RetrievalItem[];
+}): string {
+  const runId = newId();
+  db.insert(schema.retrievalRuns)
+    .values({
+      id: runId,
+      projectId: input.projectId,
+      mode: input.mode,
+      query: input.query,
+      filtersJson: input.filters ? JSON.stringify(input.filters) : null,
+      contextCharCount: input.contextCharCount,
+      createdAt: new Date().toISOString(),
+    })
+    .run();
+  for (const it of input.items) {
+    db.insert(schema.retrievalRunItems)
+      .values({
+        id: newId(),
+        runId,
+        sourceId: it.sourceId ?? null,
+        chunkId: it.chunkId ?? null,
+        learningDocId: it.learningDocId ?? null,
+        title: it.title ?? null,
+        rank: it.rank ?? null,
+        score: it.score ?? null,
+        matchType: it.matchType ?? null,
+        matchedTermsJson: it.matchedTerms?.length ? JSON.stringify(it.matchedTerms) : null,
+        metadataJson: it.metadata ? JSON.stringify(it.metadata) : null,
+      })
+      .run();
+  }
+  return runId;
+}
+
+// ── Generated outputs (Phase 8) ──────────────────────────────────────────────
+
+export function createOutput(input: {
+  projectId: string;
+  type: string;
+  title: string;
+  markdownPath: string;
+  modelId: string;
+}): string {
+  const id = newId();
+  db.insert(schema.outputs)
+    .values({
+      id,
+      projectId: input.projectId,
+      type: input.type,
+      title: input.title,
+      markdownPath: input.markdownPath,
+      modelId: input.modelId,
+      createdAt: new Date().toISOString(),
+    })
+    .run();
+  return id;
+}
+
+export function linkOutputSources(outputId: string, sourceIds: string[]): void {
+  for (const sourceId of new Set(sourceIds)) {
+    db.insert(schema.outputSources).values({ outputId, sourceId }).onConflictDoNothing().run();
+  }
+}
+
+export function listOutputs(projectId: string) {
+  return db
+    .select()
+    .from(schema.outputs)
+    .where(eq(schema.outputs.projectId, projectId))
+    .orderBy(desc(schema.outputs.createdAt))
+    .all();
+}
+
+export function getRetrievalRun(runId: string) {
+  const run = db
+    .select()
+    .from(schema.retrievalRuns)
+    .where(eq(schema.retrievalRuns.id, runId))
+    .get();
+  if (!run) return null;
+  const items = db
+    .select()
+    .from(schema.retrievalRunItems)
+    .where(eq(schema.retrievalRunItems.runId, runId))
+    .all();
+  return { run, items };
 }

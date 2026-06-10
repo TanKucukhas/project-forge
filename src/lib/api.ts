@@ -54,6 +54,13 @@ export type Source = {
   credibility: number | null;
   distilledPath: string | null;
   status: string;
+  utility: string | null;
+  instructionHash: string | null;
+  goalHash: string | null;
+  taxonomyHash: string | null;
+  distilledAt: string | null;
+  model: string | null;
+  metadataJson: string | null;
   createdAt: string;
 };
 
@@ -65,7 +72,43 @@ export type LearningDoc = {
   title: string;
   markdownPath: string;
   summary: string;
+  category: string | null;
+  relevance: number | null;
+  utility: string | null;
+  instructionHash: string | null;
+  goalHash: string | null;
+  taxonomyHash: string | null;
+  goalVersion: number | null;
+  learnSchemaVersion: number | null;
+  distilledAt: string | null;
+  model: string | null;
+  parseStatus: string | null;
+  metadataJson: string | null;
   createdAt: string;
+};
+
+/** Current distill hashes for the active project — UI compares per-doc hashes to
+ *  these to flag stale docs (see /api/sources). */
+export type CurrentDistill = {
+  instructionHash: string;
+  goalHash: string;
+  taxonomyHash: string;
+  learnSchemaVersion: number;
+};
+
+export type SourcesResponse = {
+  projectId: string;
+  sources: Source[];
+  docs: LearningDoc[];
+  categories: Category[];
+  current: CurrentDistill;
+};
+
+/** Parsed learned-document payload (frontmatter split from body). */
+export type DocResponse = {
+  markdown: string;
+  frontmatter: Record<string, unknown>;
+  body: string;
 };
 
 export type Category = { id: string; projectId: string; name: string };
@@ -128,7 +171,7 @@ export function useProjects() {
 export function useCreateProject() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { title: string; goal: string; settings: ProjectSettings }) =>
+    mutationFn: (body: { title: string; goal: string; settings: Partial<ProjectSettings> }) =>
       jsonFetch<{ project: Project }>("/api/projects", {
         method: "POST",
         body: JSON.stringify(body),
@@ -179,6 +222,16 @@ export function useJobs() {
   });
 }
 
+/** Dismiss a finished/errored job (acknowledge) so it leaves the activity list. */
+export function useDismissJob() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      jsonFetch<{ ok: boolean }>(`/api/jobs?id=${encodeURIComponent(id)}`, { method: "DELETE" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["jobs"] }),
+  });
+}
+
 export function useSources(projectId: string | null) {
   const qc = useQueryClient();
   useJobs();
@@ -186,7 +239,7 @@ export function useSources(projectId: string | null) {
     queryKey: ["sources", projectId],
     enabled: Boolean(projectId),
     queryFn: () =>
-      jsonFetch<{ sources: Source[]; docs: LearningDoc[]; categories: Category[] }>(
+      jsonFetch<SourcesResponse>(
         `/api/sources?projectId=${encodeURIComponent(projectId!)}`,
       ),
     placeholderData: keepPreviousData,
@@ -207,9 +260,7 @@ export function useDoc(markdownPath: string | null) {
     queryKey: ["doc", markdownPath],
     enabled: Boolean(markdownPath),
     queryFn: () =>
-      jsonFetch<{ markdown: string }>(
-        `/api/docs?path=${encodeURIComponent(markdownPath!)}`,
-      ).then((r) => r.markdown),
+      jsonFetch<DocResponse>(`/api/docs?path=${encodeURIComponent(markdownPath!)}`),
   });
 }
 
@@ -344,10 +395,37 @@ export function useDistill(projectId: string | null) {
   });
 }
 
+export type AskMode = "summaries" | "full" | "hybrid" | "auto";
+
+export type AskScope = {
+  mode: AskMode;
+  sourceIds?: string[];
+  category?: string;
+  categories?: string[];
+  tags?: string[];
+  authors?: string[];
+  games?: string[];
+  uses?: string[];
+};
+
+export type RetrievedItem = {
+  title: string;
+  sourceId: string | null;
+  matchType: string;
+  rank?: number | null;
+  category?: string | null;
+  relevance?: number | null;
+  utility?: string | null;
+  contextType?: "summary" | "chunk" | "metadata";
+};
+
 export type AskResult = {
   answer: string;
   usedSources: { id: string; title: string }[];
+  retrieved: RetrievedItem[];
   mode: string;
+  retrievalRunId: string;
+  contextCharCount: number;
 };
 
 export function useAsk() {
@@ -356,7 +434,131 @@ export function useAsk() {
       projectId: string;
       question: string;
       modelId: string;
-      scope: { mode: "summaries" | "full"; sourceIds?: string[]; category?: string };
+      scope: AskScope;
     }) => jsonFetch<AskResult>("/api/ask", { method: "POST", body: JSON.stringify(body) }),
+  });
+}
+
+export type Author = { id: string; displayName: string; slug: string };
+export type Entity = { id: string; type: string; name: string; slug: string };
+
+/** Authors + entities (games/studios/people) + tags for the active project —
+ *  drives the Ask filter pickers. Polls alongside sources. */
+export function useGraph(projectId: string | null) {
+  const qc = useQueryClient();
+  return useQuery({
+    queryKey: ["graph", projectId],
+    enabled: Boolean(projectId),
+    queryFn: () =>
+      jsonFetch<{ authors: Author[]; entities: Entity[]; tags: string[] }>(
+        `/api/graph?projectId=${encodeURIComponent(projectId!)}`,
+      ),
+    placeholderData: keepPreviousData,
+    refetchInterval: () => (shouldPoll(jobsFromCache(qc)) ? 2000 : false),
+  });
+}
+
+// ── Generate / preview / outputs (Ask command center) ────────────────────────
+
+export type GenerateOutputType =
+  | "answer"
+  | "game_concept"
+  | "gdd"
+  | "prototype_spec"
+  | "technical_spec"
+  | "agent_build_prompt"
+  | "evaluation_checklist";
+
+export type PreviewResult = {
+  mode: string;
+  contextCharCount: number;
+  retrieved: RetrievedItem[];
+  used: { id: string; title: string }[];
+  targetCount: number | null;
+  summaryCount: number;
+  chunkCount: number;
+  metadataCount: number;
+};
+
+/** Dry-run retrieval — shows what context WOULD be used, no model call. */
+export function usePreviewContext() {
+  return useMutation({
+    mutationFn: (body: { projectId: string; question: string; scope: AskScope }) =>
+      jsonFetch<PreviewResult>("/api/ask/preview", { method: "POST", body: JSON.stringify(body) }),
+  });
+}
+
+export type GenerateResult = {
+  markdownPath: string;
+  output: string;
+  retrievalRunId: string;
+  mode: string;
+  used: { id: string; title: string }[];
+  retrieved: RetrievedItem[];
+  contextCharCount: number;
+};
+
+/** Generate a structured output (game concept / GDD / spec / agent prompt …). */
+export function useGenerateOutput(projectId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: {
+      outputType: GenerateOutputType;
+      request: string;
+      modelId: string;
+      scope: AskScope;
+    }) =>
+      jsonFetch<GenerateResult>("/api/generate/output", {
+        method: "POST",
+        body: JSON.stringify({ ...body, projectId }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["outputs", projectId] }),
+  });
+}
+
+/** Save an Ask answer / generated text as a durable output. */
+export function useSaveOutput(projectId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: {
+      type: string;
+      title: string;
+      markdown: string;
+      request?: string;
+      modelId?: string;
+      retrievalRunId?: string;
+      sourceIds?: string[];
+    }) =>
+      jsonFetch<{ outputId: string; markdownPath: string }>("/api/outputs", {
+        method: "POST",
+        body: JSON.stringify({ ...body, projectId }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["outputs", projectId] }),
+  });
+}
+
+export type AblationRun = {
+  variant: string;
+  retrievalRunId: string;
+  outputPath: string;
+  contextCharCount: number;
+  sources: number;
+};
+
+/** Run the distilled/raw/hybrid ablation for one request. */
+export function useAblation() {
+  return useMutation({
+    mutationFn: (body: {
+      projectId: string;
+      question: string;
+      modelId: string;
+      outputType?: GenerateOutputType;
+      sourceIds?: string[];
+      category?: string;
+    }) =>
+      jsonFetch<{ evalId: string; outputType: string; runs: AblationRun[] }>(
+        "/api/eval/ablation",
+        { method: "POST", body: JSON.stringify(body) },
+      ),
   });
 }

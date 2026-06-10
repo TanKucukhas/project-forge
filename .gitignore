@@ -12,6 +12,7 @@ dist/
 # Local data (the knowledge base lives here — never commit user data)
 /data/*.sqlite
 /data/*.sqlite-*
+/data/queue.json
 /learning/
 
 # Env / secrets

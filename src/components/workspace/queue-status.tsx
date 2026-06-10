@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Loader2, CheckCircle2, AlertCircle, Activity } from "lucide-react";
-import { useJobs } from "@/lib/api";
+import { Loader2, CheckCircle2, AlertCircle, Activity, X } from "lucide-react";
+import { useJobs, useDismissJob } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
@@ -19,13 +19,15 @@ function statusVariant(status: string): "default" | "secondary" | "destructive" 
  */
 export function QueueStatus() {
   const { data: jobs } = useJobs();
+  const dismiss = useDismissJob();
   const [open, setOpen] = useState(false);
 
   const all = jobs ?? [];
   const running = all.find((j) => j.status === "running");
   const queued = all.filter((j) => j.status === "queued");
   const active = all.filter((j) => j.status === "running" || j.status === "queued");
-  const hasError = all.some((j) => j.status === "error");
+  const errorCount = all.filter((j) => j.status === "error").length;
+  const hasError = errorCount > 0;
 
   return (
     <div className="relative">
@@ -55,7 +57,9 @@ export function QueueStatus() {
         ) : hasError ? (
           <>
             <AlertCircle className="size-3.5 shrink-0" />
-            <span className="shrink-0">Needs attention</span>
+            <span className="shrink-0">
+              {errorCount} {errorCount === 1 ? "job failed" : "jobs failed"}
+            </span>
           </>
         ) : (
           <>
@@ -107,9 +111,21 @@ export function QueueStatus() {
                           {job.kind}
                         </Badge>
                         <span className="truncate text-xs text-foreground">{job.label}</span>
+                        <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                          {job.updatedAt.slice(11, 16)}
+                        </span>
+                        {(job.status === "error" || job.status === "done") && (
+                          <button
+                            onClick={() => dismiss.mutate(job.id)}
+                            className="shrink-0 text-muted-foreground hover:text-foreground"
+                            title="Dismiss"
+                          >
+                            <X className="size-3.5" />
+                          </button>
+                        )}
                       </div>
                       {job.error && (
-                        <p className="mt-0.5 line-clamp-2 text-xs text-destructive">{job.error}</p>
+                        <p className="mt-0.5 text-xs text-destructive">{job.error}</p>
                       )}
                     </div>
                   </div>

@@ -23,6 +23,36 @@ function connect(): Database.Database {
   conn.pragma("foreign_keys = ON");
   conn.exec(DDL);
   ensureColumn(conn, "sources", "thumbnail", "TEXT");
+  // Phase 1/2: distill versioning + structured metadata. Added here (not just in
+  // DDL) so databases created before this change gain the columns without losing
+  // data. Old rows keep NULLs → treated as "unknown version" by the Learn page.
+  for (const [col, type] of [
+    ["utility", "TEXT"],
+    ["instruction_hash", "TEXT"],
+    ["goal_hash", "TEXT"],
+    ["taxonomy_hash", "TEXT"],
+    ["distilled_at", "TEXT"],
+    ["model", "TEXT"],
+    ["metadata_json", "TEXT"],
+  ] as const) {
+    ensureColumn(conn, "sources", col, type);
+  }
+  for (const [col, type] of [
+    ["category", "TEXT"],
+    ["relevance", "INTEGER"],
+    ["utility", "TEXT"],
+    ["instruction_hash", "TEXT"],
+    ["goal_hash", "TEXT"],
+    ["taxonomy_hash", "TEXT"],
+    ["goal_version", "INTEGER"],
+    ["learn_schema_version", "INTEGER"],
+    ["distilled_at", "TEXT"],
+    ["model", "TEXT"],
+    ["parse_status", "TEXT"],
+    ["metadata_json", "TEXT"],
+  ] as const) {
+    ensureColumn(conn, "learning_docs", col, type);
+  }
   sqlite = conn;
   return conn;
 }
