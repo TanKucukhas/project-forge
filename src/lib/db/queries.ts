@@ -134,6 +134,24 @@ export function getSource(id: string) {
   return db.select().from(schema.sources).where(eq(schema.sources.id, id)).get();
 }
 
+/** Learned docs derived from one source (newest first) — for cleanup on delete. */
+export function listDocsForSource(sourceId: string) {
+  return db
+    .select()
+    .from(schema.learningDocs)
+    .where(eq(schema.learningDocs.sourceId, sourceId))
+    .orderBy(desc(schema.learningDocs.createdAt))
+    .all();
+}
+
+/** Delete a source and everything that hangs off it. FK ON DELETE CASCADE drops
+ *  chunks (→ FTS via triggers), tags/author/entity links, and output_sources;
+ *  learning_docs is SET NULL on source delete, so we remove those rows first. */
+export function deleteSource(id: string): void {
+  db.delete(schema.learningDocs).where(eq(schema.learningDocs.sourceId, id)).run();
+  db.delete(schema.sources).where(eq(schema.sources.id, id)).run();
+}
+
 export function getSourceChunks(sourceId: string) {
   return db
     .select()
@@ -149,6 +167,22 @@ export function listSources(projectId: string) {
     .where(eq(schema.sources.projectId, projectId))
     .orderBy(desc(schema.sources.createdAt))
     .all();
+}
+
+/** Total transcript tokens per source (sum over its chunks). Falls back to
+ *  chars/4 for legacy rows whose token_count was never set. Drives the Smart
+ *  Context "what would using everything cost" estimate. */
+export function sourceTokenTotals(projectId: string): Map<string, number> {
+  const rows = db
+    .select({
+      sourceId: schema.sourceChunks.sourceId,
+      tokens: sql<number>`cast(sum(case when ${schema.sourceChunks.tokenCount} > 0 then ${schema.sourceChunks.tokenCount} else length(${schema.sourceChunks.content}) / 4 end) as integer)`,
+    })
+    .from(schema.sourceChunks)
+    .where(eq(schema.sourceChunks.projectId, projectId))
+    .groupBy(schema.sourceChunks.sourceId)
+    .all();
+  return new Map(rows.map((r) => [r.sourceId, r.tokens ?? 0]));
 }
 
 /** All non-null source URLs in a project — used to dedupe re-imports. */

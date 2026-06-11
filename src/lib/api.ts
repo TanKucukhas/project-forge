@@ -432,6 +432,22 @@ export function useDistill(projectId: string | null) {
   });
 }
 
+/** Permanently delete a source (raw snapshot + any learned docs + DB rows). */
+export function useDeleteSource(projectId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (sourceId: string) =>
+      jsonFetch<{ success: boolean; id: string }>(
+        `/api/sources?id=${encodeURIComponent(sourceId)}`,
+        { method: "DELETE" },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sources", projectId] });
+      qc.invalidateQueries({ queryKey: ["graph", projectId] });
+    },
+  });
+}
+
 export type AskMode = "summaries" | "full" | "hybrid" | "auto";
 
 export type AskScope = {
@@ -504,7 +520,8 @@ export type GenerateOutputType =
   | "prototype_spec"
   | "technical_spec"
   | "agent_build_prompt"
-  | "evaluation_checklist";
+  | "evaluation_checklist"
+  | "visualization_prompt";
 
 export type PreviewResult = {
   mode: string;
@@ -522,6 +539,28 @@ export function usePreviewContext() {
   return useMutation({
     mutationFn: (body: { projectId: string; question: string; scope: AskScope }) =>
       jsonFetch<PreviewResult>("/api/ask/preview", { method: "POST", body: JSON.stringify(body) }),
+  });
+}
+
+export type SmartScopeResult = {
+  sourceIds: string[];
+  reason: string;
+  selected: { id: string; title: string; category: string | null; tokens: number }[];
+  totals: {
+    allCount: number;
+    allTokens: number;
+    selectedCount: number;
+    selectedTokens: number;
+  };
+};
+
+/** Smart Context pre-pass — ONE cheap model call that picks relevant sources
+ *  from the catalog (titles/metadata only) and reports the token trade-off
+ *  (everything vs. the picked subset). User-triggered; never call automatically. */
+export function useSmartScope() {
+  return useMutation({
+    mutationFn: (body: { projectId: string; question: string; modelId: string }) =>
+      jsonFetch<SmartScopeResult>("/api/ask/smart-scope", { method: "POST", body: JSON.stringify(body) }),
   });
 }
 

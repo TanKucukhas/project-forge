@@ -12,7 +12,7 @@
  *     index/    ...
  */
 import "server-only";
-import { mkdir, writeFile, readFile } from "node:fs/promises";
+import { mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import matter from "gray-matter";
 import type { ResourceSnapshot } from "@/lib/capture/resource-fetch";
@@ -228,6 +228,24 @@ export async function saveDoc(
 
 export async function readLibraryFile(relativePath: string): Promise<string> {
   return readFile(path.join(process.cwd(), relativePath), "utf8");
+}
+
+/** Remove a source's markdown footprint: its raw snapshot (`.json`/`.txt`/`.pdf`)
+ *  and every learned doc derived from it. Best-effort — missing files are fine
+ *  (Markdown is truth, but a deleted source shouldn't leave orphan files). */
+export async function deleteSourceFiles(
+  projectId: string,
+  sourceId: string,
+  docRelativePaths: string[],
+): Promise<void> {
+  const base = projectDir(projectId);
+  const targets = [
+    path.join(base, "sources", `source-${sourceId}.json`),
+    path.join(base, "sources", `source-${sourceId}.txt`),
+    path.join(base, "sources", `source-${sourceId}.pdf`),
+    ...docRelativePaths.map((p) => path.join(process.cwd(), p)),
+  ];
+  await Promise.all(targets.map((t) => rm(t, { force: true }).catch(() => {})));
 }
 
 /**

@@ -20,12 +20,14 @@ import {
   Settings,
   FileUp,
   Plus,
+  Trash2,
 } from "lucide-react";
 import { useWorkspace } from "@/lib/store";
 import {
   useCapture,
   useCapturePdf,
   useDistill,
+  useDeleteSource,
   useSources,
   useJobs,
   useSnapshot,
@@ -175,6 +177,7 @@ export function CenterPanel() {
   const capture = useCapture(activeProjectId);
   const capturePdf = useCapturePdf(activeProjectId);
   const distill = useDistill(activeProjectId);
+  const deleteSource = useDeleteSource(activeProjectId);
   const channelPreview = useChannelPreview();
   const updateProject = useUpdateProject();
   const modelUsagePolicy = useModelUsagePolicy(activeProjectId);
@@ -459,6 +462,27 @@ export function CenterPanel() {
     }
   }
 
+  async function onDeleteSource(s: Source) {
+    if (learnStateOf(s)) return; // don't delete mid-learn
+    if (
+      !window.confirm(
+        `Delete "${s.title}"?\n\nThis permanently removes its captured text${
+          s.status === "distilled" ? " and learned summary" : ""
+        } from your learning materials. This cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    // If the deleted source is open in the preview, close it.
+    if (preview?.kind === "snapshot" && preview.sourceId === s.id) closePreview();
+    try {
+      await deleteSource.mutateAsync(s.id);
+      toast.success(`Deleted "${s.title}".`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Delete failed.");
+    }
+  }
+
   function toggleSource(id: string) {
     setSelectedSources((prev) => {
       const next = new Set(prev);
@@ -567,6 +591,16 @@ export function CenterPanel() {
           title={s.status === "distilled" ? "Re-learn" : "Learn"}
         >
           {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
+        </Button>
+        <Button
+          size="icon-sm"
+          variant="ghost"
+          disabled={pending || busy}
+          onClick={() => onDeleteSource(s)}
+          title="Delete source"
+          className="text-muted-foreground hover:text-destructive"
+        >
+          <Trash2 className="size-3.5" />
         </Button>
       </div>
     );
@@ -1316,6 +1350,18 @@ export function CenterPanel() {
                             ) : (
                               <Sparkles className="size-3.5" />
                             )}
+                          </Button>
+                        )}
+                        {src && (
+                          <Button
+                            size="icon-sm"
+                            variant="ghost"
+                            disabled={busy}
+                            onClick={() => onDeleteSource(src)}
+                            title="Delete source"
+                            className="text-muted-foreground hover:text-destructive"
+                          >
+                            <Trash2 className="size-3.5" />
                           </Button>
                         )}
                       </div>
