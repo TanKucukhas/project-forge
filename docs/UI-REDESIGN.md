@@ -133,7 +133,14 @@ first build passes.
 
 ## 5. Build order (incremental — each pass: typecheck+lint, keep it shippable)
 
-**START HERE → Step 1: Chat data model + store.**
+**STATUS (2026-06-11): Steps 1–5 implemented** (chat store, chat-centric sidebar
+with project-corner menu, multi-turn chat center with `history` wired into
+`/api/ask/stream`, Learn merge via Capture/Learn sub-toggle, project Dashboard).
+typecheck/lint/build clean. Remaining: §4 Image (deferred), polish (chat
+rename, advanced scope filters in chat, model-named titles), and removing the
+now-unmounted `ask-panel.tsx` once its exported helpers are relocated.
+
+**Step 1: Chat data model + store.**
 - New `src/lib/chat-store.ts` (or extend store): localStorage-backed, per project.
   `Chat` / `ChatTurn` types (§2), CRUD: `listChats(projectId)`, `getChat(id)`,
   `createChat(projectId, firstTurn)`, `appendTurn(chatId, turn)`, `renameChat`,
