@@ -130,10 +130,10 @@ export function LearnedDocView({ doc, staleness }: { doc: DocResponse; staleness
         {staleness !== "fresh" && (
           <Badge
             variant="outline"
-            className="border-amber-500/50 font-normal text-amber-600"
+            className="flex items-center gap-1 border-amber-500/50 font-normal text-amber-600"
             title={STALE_HINT[staleness]}
           >
-            ⚠ {STALE_LABEL[staleness]}
+            <AlertTriangle className="size-3" /> {STALE_LABEL[staleness]}
           </Badge>
         )}
 

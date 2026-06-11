@@ -12,6 +12,8 @@ import {
   Eye,
   CheckCircle2,
   AlertCircle,
+  AlertTriangle,
+  ExternalLink,
   ChevronRight,
   Tv,
   PlayCircle,
@@ -724,7 +726,7 @@ export function CenterPanel() {
                         {videoPreview.likeCount != null && <span>{formatCount(videoPreview.likeCount)} likes</span>}
                         {videoPreview.uploadDate && <span>{videoPreview.uploadDate}</span>}
                         <a href={videoPreview.url} target="_blank" rel="noreferrer" className="text-primary underline">
-                          open ↗
+                          open <ExternalLink className="inline size-3 align-text-bottom" />
                         </a>
                       </div>
                     </div>
@@ -917,7 +919,7 @@ export function CenterPanel() {
                               rel="noreferrer"
                               className="ml-auto text-primary underline"
                             >
-                              open ↗
+                              open <ExternalLink className="inline size-3 align-text-bottom" />
                             </a>
                           </div>
                         </div>
@@ -1100,8 +1102,8 @@ export function CenterPanel() {
                             </span>
                           )}
                           {s.status === "distilled" && (
-                            <span className="absolute right-1.5 top-1.5 rounded bg-emerald-600 px-1.5 py-0.5 text-[10px] font-medium text-white">
-                              ✓ learned
+                            <span className="absolute right-1.5 top-1.5 flex items-center gap-1 rounded bg-emerald-600 px-1.5 py-0.5 text-[10px] font-medium text-white">
+                              <CheckCircle2 className="size-3" /> learned
                             </span>
                           )}
                         </div>
@@ -1175,9 +1177,12 @@ export function CenterPanel() {
                 No sources captured yet. Add some in the <strong>Capture</strong> tab.
               </Card>
             ) : notLearned.length === 0 ? (
-              <Card className="p-6 text-sm text-muted-foreground">
-                Everything captured has been learned. 🎉 See <strong>Learned</strong> or{" "}
-                <strong>All</strong>.
+              <Card className="flex items-start gap-1.5 p-6 text-sm text-muted-foreground">
+                <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600" />
+                <span>
+                  Everything captured has been learned. See <strong>Learned</strong> or{" "}
+                  <strong>All</strong>.
+                </span>
               </Card>
             ) : (
               (() => {
@@ -1440,7 +1445,7 @@ export function CenterPanel() {
                         ))}
                       {snapshot.url && (
                         <a href={snapshot.url} target="_blank" rel="noreferrer" className="text-primary underline">
-                          open ↗
+                          open <ExternalLink className="inline size-3 align-text-bottom" />
                         </a>
                       )}
                     </div>
@@ -1604,12 +1609,12 @@ function StaleBadge({ staleness }: { staleness: Staleness }) {
   return (
     <Badge
       variant="outline"
-      className={`shrink-0 text-[10px] font-normal ${
+      className={`flex shrink-0 items-center gap-1 text-[10px] font-normal ${
         soft ? "border-sky-500/50 text-sky-600" : "border-amber-500/50 text-amber-600"
       }`}
       title={STALE_HINT[staleness]}
     >
-      ⚠ {STALE_LABEL[staleness]}
+      <AlertTriangle className="size-3" /> {STALE_LABEL[staleness]}
     </Badge>
   );
 }
