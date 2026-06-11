@@ -17,7 +17,13 @@ import path from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
 import matter from "gray-matter";
 import { initDb } from "../src/db/client";
-import { listProjects, listSources, updateSource } from "../src/lib/db/queries";
+import {
+  listProjects,
+  listSources,
+  updateSource,
+  listDocsForSource,
+  setLearningDocsTitleForSource,
+} from "../src/lib/db/queries";
 import { runModel } from "../src/lib/ai";
 
 const MODEL = process.env.FIX_MODEL || "claude:sonnet";
@@ -54,15 +60,14 @@ ${content.slice(0, 4000)}`;
     .trim();
 }
 
-async function updateDocTitle(distilledPath: string | null, title: string): Promise<void> {
-  if (!distilledPath) return;
-  const abs = path.join(process.cwd(), distilledPath);
+async function updateDocFrontmatter(relPath: string, title: string): Promise<void> {
+  const abs = path.join(process.cwd(), relPath);
   try {
     const parsed = matter(await readFile(abs, "utf8"));
     parsed.data.title = title;
     await writeFile(abs, matter.stringify(parsed.content, parsed.data), "utf8");
   } catch (e) {
-    console.warn(`    ! couldn't update doc ${distilledPath}: ${e instanceof Error ? e.message : e}`);
+    console.warn(`    ! couldn't update doc ${relPath}: ${e instanceof Error ? e.message : e}`);
   }
 }
 
@@ -78,24 +83,31 @@ async function main() {
     console.log(`Project "${p.title}" — ${notes.length} note(s)`);
 
     for (const s of notes) {
-      if (!FIX_ALL && !looksGeneric(s.title)) {
-        skipped++;
-        continue;
-      }
-      const content = await readSnapshotContent(s.rawTextPath);
-      if (!content.trim()) {
-        console.log(`  - skip (no text): ${s.id}`);
-        skipped++;
-        continue;
-      }
+      const generic = looksGeneric(s.title);
       try {
-        const title = await genTitle(content);
+        // Pick the target title: generate one only when the source still has a
+        // placeholder; otherwise reuse the already-good source title (this lets a
+        // re-run repair stale learning_docs rows without spending a model call).
+        let title = s.title;
+        if (generic || FIX_ALL) {
+          const content = await readSnapshotContent(s.rawTextPath);
+          if (!content.trim()) {
+            console.log(`  - skip (no text): ${s.id}`);
+            skipped++;
+            continue;
+          }
+          const gen = await genTitle(content);
+          if (gen.length >= 3) title = gen;
+        }
         if (title.length < 3) {
           skipped++;
           continue;
         }
+        // Apply to the source row, the learning_docs rows (Learned list reads
+        // these), and every learned-doc frontmatter on disk.
         updateSource(s.id, { title });
-        await updateDocTitle(s.distilledPath, title);
+        setLearningDocsTitleForSource(s.id, title);
+        for (const d of listDocsForSource(s.id)) await updateDocFrontmatter(d.markdownPath, title);
         console.log(`  ✓ "${s.title}"  →  "${title}"`);
         fixed++;
       } catch (e) {

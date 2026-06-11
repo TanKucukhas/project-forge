@@ -563,7 +563,7 @@ ${content}`;
     projectId: source.projectId,
     sourceId: source.id,
     kind: "distilled",
-    title: source.title,
+    title: docTitle,
     markdownPath,
     summary: rationale || whyKeep || summaryMarkdown.replace(/\s+/g, " ").slice(0, 200),
     category,

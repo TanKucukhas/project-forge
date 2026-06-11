@@ -144,6 +144,12 @@ export function listDocsForSource(sourceId: string) {
     .all();
 }
 
+/** Sync the learning_docs title for a source (the Learned list reads this column,
+ *  not the source row). Updates every doc derived from the source. */
+export function setLearningDocsTitleForSource(sourceId: string, title: string): void {
+  db.update(schema.learningDocs).set({ title }).where(eq(schema.learningDocs.sourceId, sourceId)).run();
+}
+
 /** Delete a source and everything that hangs off it. FK ON DELETE CASCADE drops
  *  chunks (→ FTS via triggers), tags/author/entity links, and output_sources;
  *  learning_docs is SET NULL on source delete, so we remove those rows first. */
