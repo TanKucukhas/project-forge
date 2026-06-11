@@ -156,7 +156,7 @@ function shouldPoll(jobs: Job[] | undefined): boolean {
 }
 
 function jobsFromCache(qc: QueryClient): Job[] | undefined {
-  return qc.getQueryData<Job[]>(["jobs"]);
+  return qc.getQueryData<JobsResponse>(["jobs"])?.jobs;
 }
 
 // ── Projects ─────────────────────────────────────────────────────────────────
@@ -214,11 +214,38 @@ export function useModelUsagePolicy(projectId: string | null): ModelUsagePolicy 
 
 // ── Jobs / sources ───────────────────────────────────────────────────────────
 
+export type JobStats = {
+  queued: number;
+  running: number;
+  done: number;
+  error: number;
+  total: number;
+  avgMs: number;
+  etaMs: number;
+};
+export type JobsResponse = { jobs: Job[]; stats: JobStats };
+
+const fetchJobs = () => jsonFetch<JobsResponse>("/api/jobs");
+const jobsRefetch = (q: { state: { data?: JobsResponse } }) =>
+  shouldPoll(q.state.data?.jobs) ? 1000 : false;
+
+/** The activity list (capped, running surfaced first). */
 export function useJobs() {
   return useQuery({
     queryKey: ["jobs"],
-    queryFn: () => jsonFetch<{ jobs: Job[] }>("/api/jobs").then((r) => r.jobs),
-    refetchInterval: (q) => (shouldPoll(q.state.data) ? 1000 : false),
+    queryFn: fetchJobs,
+    select: (d) => d.jobs,
+    refetchInterval: jobsRefetch,
+  });
+}
+
+/** True totals + empirical ETA across the whole queue (same cache as useJobs). */
+export function useJobStats() {
+  return useQuery({
+    queryKey: ["jobs"],
+    queryFn: fetchJobs,
+    select: (d) => d.stats,
+    refetchInterval: jobsRefetch,
   });
 }
 
@@ -228,6 +255,16 @@ export function useDismissJob() {
   return useMutation({
     mutationFn: (id: string) =>
       jsonFetch<{ ok: boolean }>(`/api/jobs?id=${encodeURIComponent(id)}`, { method: "DELETE" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["jobs"] }),
+  });
+}
+
+/** Cancel all not-yet-started (queued) jobs; the running one finishes. */
+export function useCancelQueued() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      jsonFetch<{ ok: boolean; cancelled: number }>("/api/jobs?scope=queued", { method: "DELETE" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["jobs"] }),
   });
 }

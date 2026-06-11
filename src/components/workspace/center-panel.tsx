@@ -1215,16 +1215,18 @@ export function CenterPanel() {
                   return (
                     <div key={d.id} className="text-sm">
                       <div className="flex items-center gap-2 px-3 py-2.5 transition-colors hover:bg-muted/50">
-                        <FileText className="size-4 shrink-0 text-muted-foreground" />
                         <div className="min-w-0 flex-1">
                           <button
                             onClick={() => previewDoc(d.markdownPath)}
-                            className="block w-full truncate text-left font-medium"
-                            title="Open latest"
+                            className="group flex w-full cursor-pointer items-center gap-2 text-left"
+                            title="Open — read the learned summary"
                           >
-                            {d.title}
+                            <FileText className="size-4 shrink-0 text-muted-foreground group-hover:text-primary" />
+                            <span className="truncate font-medium group-hover:text-primary group-hover:underline">
+                              {d.title}
+                            </span>
                           </button>
-                          <div className="flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
+                          <div className="flex flex-wrap items-center gap-x-1.5 pl-6 text-xs text-muted-foreground">
                             <span>Latest</span>
                             {d.learnSchemaVersion != null && <span>· schema v{d.learnSchemaVersion}</span>}
                             {d.relevance != null && <span>· {d.relevance}/100</span>}
@@ -1239,7 +1241,7 @@ export function CenterPanel() {
                                     return next;
                                   })
                                 }
-                                className="underline hover:text-foreground"
+                                className="cursor-pointer underline hover:text-foreground"
                               >
                                 · History ({older.length})
                               </button>
@@ -1247,6 +1249,15 @@ export function CenterPanel() {
                           </div>
                         </div>
                         <StaleBadge staleness={stale} />
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 shrink-0 gap-1 text-xs"
+                          onClick={() => previewDoc(d.markdownPath)}
+                          title="Read the learned summary"
+                        >
+                          <Eye className="size-3.5" /> Read
+                        </Button>
                         {src && (
                           <Button
                             size="icon-sm"
@@ -1269,7 +1280,7 @@ export function CenterPanel() {
                           <button
                             key={h.id}
                             onClick={() => previewDoc(h.markdownPath)}
-                            className="flex w-full items-center gap-2 border-t bg-muted/20 px-3 py-1.5 pl-10 text-left text-xs text-muted-foreground hover:bg-muted/40"
+                            className="flex w-full cursor-pointer items-center gap-2 border-t bg-muted/20 px-3 py-1.5 pl-10 text-left text-xs text-muted-foreground hover:bg-muted/40"
                             title="Open older version"
                           >
                             <span className="flex-1 truncate">

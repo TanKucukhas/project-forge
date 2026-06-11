@@ -34,6 +34,10 @@ export type Job = {
   error?: string;
   createdAt: string;
   updatedAt: string;
+  /** When the job actually started running (for duration/ETA measurement). */
+  startedAt?: string;
+  /** Measured run time once finished (ms) — feeds the empirical ETA. */
+  durationMs?: number;
   /** Serializable input for persistent jobs (so they can be rebuilt on restart). */
   payload?: JobPayload;
   /** Whether this job is persisted + resumable (true) or one-off in-memory (false). */
@@ -44,11 +48,15 @@ export type Job = {
 
 type PendingItem = { id: string; run: JobRunner; throttleMs: number };
 
+/** One sequential lane per job kind, so distinct kinds (capture vs distill) run
+ *  CONCURRENTLY while each kind stays sequential internally (no 200 parallel
+ *  yt-dlp scrapes or model calls). */
+type Lane = { pending: PendingItem[]; draining: boolean };
+
 type QueueState = {
   jobs: Map<string, Job>;
-  pending: PendingItem[];
+  lanes: Map<JobKind, Lane>;
   handlers: Map<JobKind, (payload: JobPayload) => Promise<Record<string, unknown> | void>>;
-  draining: boolean;
   loaded: boolean;
 };
 
@@ -58,16 +66,27 @@ const QUEUE_FILE =
 const globalForQueue = globalThis as unknown as { __pfQueue?: QueueState };
 
 function state(): QueueState {
-  if (!globalForQueue.__pfQueue) {
-    globalForQueue.__pfQueue = {
-      jobs: new Map(),
-      pending: [],
-      handlers: new Map(),
-      draining: false,
-      loaded: false,
-    };
+  // Backfill defensively: the global survives HMR, so a hot-reload after the
+  // queue's shape changed can leave an older object missing newer fields (e.g.
+  // `lanes`). Initialize any missing map rather than crashing on `.get`.
+  const s = (globalForQueue.__pfQueue ?? {}) as Partial<QueueState>;
+  if (!s.jobs) s.jobs = new Map();
+  if (!s.lanes) s.lanes = new Map();
+  if (!s.handlers) s.handlers = new Map();
+  if (s.loaded === undefined) s.loaded = false;
+  globalForQueue.__pfQueue = s as QueueState;
+  return s as QueueState;
+}
+
+/** Get (or create) the lane for a job kind. */
+function lane(kind: JobKind): Lane {
+  const s = state();
+  let l = s.lanes.get(kind);
+  if (!l) {
+    l = { pending: [], draining: false };
+    s.lanes.set(kind, l);
   }
-  return globalForQueue.__pfQueue;
+  return l;
 }
 
 function touch(job: Job): void {
@@ -148,12 +167,16 @@ export function loadPersisted(): void {
     };
     s.jobs.set(job.id, job);
     const payload = rec.payload;
-    s.pending.push({ id: job.id, run: () => handler(payload), throttleMs: rec.throttleMs ?? 0 });
+    lane(rec.kind).pending.push({
+      id: job.id,
+      run: () => handler(payload),
+      throttleMs: rec.throttleMs ?? 0,
+    });
     resumed += 1;
   }
   if (resumed > 0) {
     persist();
-    void drain();
+    for (const kind of s.lanes.keys()) void drain(kind);
   }
 }
 
@@ -180,8 +203,8 @@ export function enqueue(
     throttleMs: opts?.throttleMs ?? 0,
   };
   s.jobs.set(job.id, job);
-  s.pending.push({ id: job.id, run, throttleMs: job.throttleMs ?? 0 });
-  void drain();
+  lane(kind).pending.push({ id: job.id, run, throttleMs: job.throttleMs ?? 0 });
+  void drain(kind);
   return job;
 }
 
@@ -209,24 +232,29 @@ export function enqueueJob(
     throttleMs: opts?.throttleMs ?? 0,
   };
   s.jobs.set(job.id, job);
-  s.pending.push({ id: job.id, run: () => handler(payload), throttleMs: job.throttleMs ?? 0 });
+  lane(kind).pending.push({ id: job.id, run: () => handler(payload), throttleMs: job.throttleMs ?? 0 });
   persist();
-  void drain();
+  void drain(kind);
   return job;
 }
 
-async function drain(): Promise<void> {
+/** Drain ONE lane sequentially. Lanes run independently, so capture and distill
+ *  progress in parallel (one job each at a time). */
+async function drain(kind: JobKind): Promise<void> {
+  const l = lane(kind);
+  if (l.draining) return;
+  l.draining = true;
   const s = state();
-  if (s.draining) return;
-  s.draining = true;
   try {
-    while (s.pending.length > 0) {
-      const next = s.pending.shift()!;
+    while (l.pending.length > 0) {
+      const next = l.pending.shift()!;
       const job = s.jobs.get(next.id);
       if (!job) continue;
       job.status = "running";
+      job.startedAt = new Date().toISOString();
       touch(job);
       persist();
+      const startMs = Date.now();
       try {
         const result = await next.run(job);
         job.status = "done";
@@ -235,13 +263,14 @@ async function drain(): Promise<void> {
         job.status = "error";
         job.error = error instanceof Error ? error.message : "Job failed.";
       }
+      job.durationMs = Date.now() - startMs;
       touch(job);
       persist();
       // Rate-limit friendliness: wait before the next job (provider-specific gap).
-      if (next.throttleMs > 0 && s.pending.length > 0) await sleep(next.throttleMs);
+      if (next.throttleMs > 0 && l.pending.length > 0) await sleep(next.throttleMs);
     }
   } finally {
-    s.draining = false;
+    l.draining = false;
   }
 }
 
@@ -259,15 +288,73 @@ export function clearJob(id: string): boolean {
   return ok;
 }
 
-/** Recent jobs, newest first — capped so the in-memory map can't grow forever. */
+/**
+ * Detail list for the activity panel: running first (the actual front of the
+ * FIFO, otherwise hidden behind newer queued items), then the next queued, then
+ * recent finished. Capped — see jobStats() for the true totals.
+ */
 export function listJobs(limit = 30): Job[] {
-  const jobs = [...state().jobs.values()].sort((a, b) =>
-    b.createdAt.localeCompare(a.createdAt),
-  );
-  // Drop very old finished jobs beyond the cap to bound memory.
-  if (jobs.length > 200) {
-    const keep = new Set(jobs.slice(0, 200).map((j) => j.id));
-    for (const id of state().jobs.keys()) if (!keep.has(id)) state().jobs.delete(id);
+  const all = [...state().jobs.values()];
+  const finished = all
+    .filter((j) => j.status === "done" || j.status === "error")
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  // Bound memory by dropping only OLD finished jobs (never queued/running, which
+  // are still in `pending` and would be skipped if their job row vanished).
+  if (finished.length > 200) {
+    for (const j of finished.slice(200)) state().jobs.delete(j.id);
   }
-  return jobs.slice(0, limit);
+  const running = all.filter((j) => j.status === "running");
+  const queued = all
+    .filter((j) => j.status === "queued")
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt)); // oldest = next up
+  return [...running, ...queued, ...finished].slice(0, limit);
+}
+
+export type JobStats = {
+  queued: number;
+  running: number;
+  done: number;
+  error: number;
+  total: number;
+  /** Avg measured run time of recent finished jobs (ms); 0 if none yet. */
+  avgMs: number;
+  /** Estimated time to clear the remaining queue (ms), from avgMs. */
+  etaMs: number;
+};
+
+/** True totals across the whole queue (not capped like listJobs) + an empirical,
+ *  model-aware ETA derived from how long recent jobs actually took. */
+export function jobStats(): JobStats {
+  const all = [...state().jobs.values()];
+  let queued = 0;
+  let running = 0;
+  let done = 0;
+  let error = 0;
+  const durs: number[] = [];
+  for (const j of all) {
+    if (j.status === "queued") queued += 1;
+    else if (j.status === "running") running += 1;
+    else if (j.status === "done") {
+      done += 1;
+      if (j.durationMs) durs.push(j.durationMs);
+    } else if (j.status === "error") {
+      error += 1;
+      if (j.durationMs) durs.push(j.durationMs);
+    }
+  }
+  const recent = durs.slice(-10);
+  const avgMs = recent.length ? Math.round(recent.reduce((a, b) => a + b, 0) / recent.length) : 0;
+  const perJob = avgMs || 120_000; // fallback ~2 min until we've measured some
+  return { queued, running, done, error, total: all.length, avgMs, etaMs: (queued + running) * perJob };
+}
+
+/** Cancel every queued (not-yet-started) job; the running job is left to finish.
+ *  Returns how many were dropped. */
+export function clearQueued(): number {
+  const s = state();
+  const ids = [...s.jobs.values()].filter((j) => j.status === "queued").map((j) => j.id);
+  for (const id of ids) s.jobs.delete(id);
+  for (const l of s.lanes.values()) l.pending = l.pending.filter((p) => s.jobs.has(p.id));
+  persist();
+  return ids.length;
 }
