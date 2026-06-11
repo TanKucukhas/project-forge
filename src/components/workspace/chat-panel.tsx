@@ -14,17 +14,26 @@
  */
 import { useState } from "react";
 import { toast } from "sonner";
-import { Loader2, Sparkles, Copy, ChevronRight, MessagesSquare } from "lucide-react";
+import { Loader2, Sparkles, Copy, ChevronRight, MessagesSquare, X, SlidersHorizontal } from "lucide-react";
 import { useWorkspace } from "@/lib/store";
-import { useModelUsagePolicy, type RetrievedItem, type GenerateOutputType } from "@/lib/api";
+import {
+  useModelUsagePolicy,
+  useSources,
+  useGraph,
+  type RetrievedItem,
+  type GenerateOutputType,
+  type AskScope,
+  type AskMode,
+} from "@/lib/api";
 import { needsPaidConfirm } from "@/lib/settings";
 import { getModelOption } from "@/lib/ai/models";
+import { tagLabel } from "@/lib/taxonomy";
 import { getChat, createChat, appendTurn, type Chat, type ChatTurn } from "@/lib/chat-store";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Markdown } from "@/components/markdown";
-import { RetrievedList, MODE_LABEL } from "./ask-panel";
+import { RetrievedList, MODE_LABEL, MODES, ChipGroup } from "./ask-panel";
 
 const OUTPUT_TYPES: { value: GenerateOutputType; label: string }[] = [
   { value: "answer", label: "Answer" },
@@ -60,12 +69,28 @@ function newTurn(request: string, outputType: GenerateOutputType, modelId: strin
 export function ChatPanel() {
   const { activeProjectId, activeChatId, setActiveChat, bumpChats, modelId } = useWorkspace();
   const modelUsagePolicy = useModelUsagePolicy(activeProjectId);
+  const { data } = useSources(activeProjectId);
+  const { data: graph } = useGraph(activeProjectId);
 
   const [current, setCurrent] = useState<Chat | null>(null);
   const [input, setInput] = useState("");
   const [outputType, setOutputType] = useState<GenerateOutputType>("answer");
   const [streamingTurn, setStreamingTurn] = useState<ChatTurn | null>(null);
   const [openEvidence, setOpenEvidence] = useState<Set<string>>(new Set());
+
+  // Retrieval scope (source / author / topic selection, or Auto) — applied to
+  // every turn in this chat. Same dimensions Ask exposes.
+  const [mode, setMode] = useState<AskMode>("auto");
+  const [advanced, setAdvanced] = useState(false);
+  const [cats, setCats] = useState<Set<string>>(new Set());
+  const [tags, setTags] = useState<Set<string>>(new Set());
+  const [authors, setAuthors] = useState<Set<string>>(new Set());
+  const [gms, setGms] = useState<Set<string>>(new Set());
+  const [srcs, setSrcs] = useState<Set<string>>(new Set());
+
+  const sources = data?.sources ?? [];
+  const categories = data?.categories ?? [];
+  const games = (graph?.entities ?? []).filter((e) => e.type === "game");
 
   // Load the active chat when project/chat selection changes (guarded
   // set-during-render — the sanctioned alternative to an effect; see ask-panel).
@@ -89,6 +114,41 @@ export function ChatPanel() {
     );
   }
 
+  function toggle(setter: React.Dispatch<React.SetStateAction<Set<string>>>, v: string) {
+    setter((prev) => {
+      const next = new Set(prev);
+      if (next.has(v)) next.delete(v);
+      else next.add(v);
+      return next;
+    });
+  }
+
+  function buildScope(): AskScope {
+    const scope: AskScope = { mode };
+    if (cats.size) scope.categories = [...cats];
+    if (tags.size) scope.tags = [...tags];
+    if (authors.size) scope.authors = [...authors];
+    if (gms.size) scope.games = [...gms];
+    if (srcs.size) scope.sourceIds = [...srcs];
+    return scope;
+  }
+
+  const activeFilters = [
+    ...[...cats].map((c) => ({ k: `cat:${c}`, label: c, clear: () => toggle(setCats, c) })),
+    ...[...tags].map((t) => ({ k: `tag:${t}`, label: `#${tagLabel(t)}`, clear: () => toggle(setTags, t) })),
+    ...[...authors].map((a) => ({ k: `au:${a}`, label: `@${a}`, clear: () => toggle(setAuthors, a) })),
+    ...[...gms].map((g) => ({
+      k: `game:${g}`,
+      label: games.find((x) => x.slug === g)?.name ?? g,
+      clear: () => toggle(setGms, g),
+    })),
+    ...[...srcs].map((s) => ({
+      k: `src:${s}`,
+      label: sources.find((x) => x.id === s)?.title.slice(0, 24) ?? s,
+      clear: () => toggle(setSrcs, s),
+    })),
+  ];
+
   function toggleEvidence(id: string) {
     setOpenEvidence((prev) => {
       const next = new Set(prev);
@@ -102,7 +162,8 @@ export function ChatPanel() {
     const req = input.trim();
     if (!activeProjectId || !req || streaming || !confirmPaid()) return;
 
-    const turn = newTurn(req, outputType, modelId);
+    const scope = buildScope();
+    const turn = { ...newTurn(req, outputType, modelId), mode: scope.mode };
     // History = the already-completed turns of this thread (latest question runs
     // fresh retrieval server-side).
     const history = (current?.turns ?? []).map((t) => ({ request: t.request, answer: t.answer }));
@@ -113,7 +174,7 @@ export function ChatPanel() {
     let answer = "";
     let retrieved: RetrievedItem[] = [];
     let used: { id: string; title: string }[] = [];
-    let modeUsed = "auto";
+    let modeUsed = scope.mode as string;
     let retrievalRunId = "";
 
     try {
@@ -124,7 +185,7 @@ export function ChatPanel() {
           projectId: activeProjectId,
           question: req,
           modelId,
-          scope: { mode: "auto" },
+          scope,
           outputType,
           history,
         }),
@@ -232,6 +293,97 @@ export function ChatPanel() {
         }
         className="resize-y text-sm"
       />
+
+      {/* Scope: source / author / topic selection, or Auto. */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+        <span>
+          Context: <span className="font-medium text-foreground">{MODE_LABEL[mode]}</span>
+        </span>
+        <span>·</span>
+        <span>
+          Scope:{" "}
+          <span className="font-medium text-foreground">
+            {activeFilters.length
+              ? `${activeFilters.length} filter${activeFilters.length === 1 ? "" : "s"}`
+              : "All knowledge"}
+          </span>
+        </span>
+        <button
+          onClick={() => setAdvanced((o) => !o)}
+          className="ml-auto flex items-center gap-1 underline hover:text-foreground"
+        >
+          <SlidersHorizontal className="size-3" />
+          {advanced ? "Hide scope" : "Choose scope"}
+        </button>
+      </div>
+
+      {activeFilters.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {activeFilters.map((f) => (
+            <Badge key={f.k} variant="outline" className="gap-1 font-normal">
+              {f.label}
+              <button onClick={f.clear} className="hover:text-foreground" title="Remove">
+                <X className="size-3" />
+              </button>
+            </Badge>
+          ))}
+        </div>
+      )}
+
+      {advanced && (
+        <div className="space-y-3 rounded-lg border bg-muted/30 p-3">
+          <ScopeRow label="Mode">
+            <div className="flex flex-wrap gap-1.5">
+              {MODES.map((m) => (
+                <button
+                  key={m.value}
+                  onClick={() => setMode(m.value)}
+                  className={`rounded-full border px-2.5 py-0.5 text-xs transition-colors ${
+                    mode === m.value
+                      ? "border-primary bg-primary/10 text-primary"
+                      : "text-muted-foreground hover:bg-muted"
+                  }`}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+          </ScopeRow>
+          <ScopeRow label="Topics">
+            <ChipGroup items={categories.map((c) => c.name)} selected={cats} onToggle={(v) => toggle(setCats, v)} />
+          </ScopeRow>
+          <ScopeRow label="Tags">
+            <ChipGroup items={graph?.tags ?? []} selected={tags} onToggle={(v) => toggle(setTags, v)} render={tagLabel} />
+          </ScopeRow>
+          <ScopeRow label="Authors">
+            <ChipGroup
+              items={(graph?.authors ?? []).map((a) => a.slug)}
+              selected={authors}
+              onToggle={(v) => toggle(setAuthors, v)}
+              render={(s) => `@${s}`}
+            />
+          </ScopeRow>
+          {games.length > 0 && (
+            <ScopeRow label="Games">
+              <ChipGroup
+                items={games.map((g) => g.slug)}
+                selected={gms}
+                onToggle={(v) => toggle(setGms, v)}
+                render={(slug) => games.find((g) => g.slug === slug)?.name ?? slug}
+              />
+            </ScopeRow>
+          )}
+          <ScopeRow label="Sources">
+            <ChipGroup
+              items={sources.map((s) => s.id)}
+              selected={srcs}
+              onToggle={(v) => toggle(setSrcs, v)}
+              render={(id) => sources.find((s) => s.id === id)?.title.slice(0, 28) ?? id}
+            />
+          </ScopeRow>
+        </div>
+      )}
+
       <div className="flex items-center gap-2">
         <Button onClick={() => void send()} disabled={!input.trim() || streaming}>
           {streaming ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
@@ -342,6 +494,18 @@ export function ChatPanel() {
       <div className="border-t bg-card/50 p-4">
         <div className="mx-auto max-w-3xl">{composer}</div>
       </div>
+    </div>
+  );
+}
+
+/** One labelled row inside the scope panel. */
+function ScopeRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-start gap-2">
+      <span className="w-16 shrink-0 pt-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+        {label}
+      </span>
+      <div className="min-w-0 flex-1">{children}</div>
     </div>
   );
 }

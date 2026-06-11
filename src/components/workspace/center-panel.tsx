@@ -1344,7 +1344,8 @@ export function CenterPanel() {
             </Tabs>
           </TabsContent>
 
-          <TabsContent value="dashboard" className="mt-0">
+          <TabsContent value="dashboard" className="mt-0 space-y-4">
+            <LearnSubNav mode={centerMode} onMode={setCenterMode} />
             <ProjectDashboard />
           </TabsContent>
 
@@ -1518,6 +1519,7 @@ function LoadingLine() {
  *  distill lists (centerMode "analyze") live under one sidebar "Learn" button. */
 function LearnSubNav({ mode, onMode }: { mode: CenterMode; onMode: (m: CenterMode) => void }) {
   const tabs: { value: CenterMode; label: string }[] = [
+    { value: "dashboard", label: "Overview" },
     { value: "learn", label: "Capture" },
     { value: "analyze", label: "Learn" },
   ];

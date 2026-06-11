@@ -43,7 +43,7 @@ const OUTPUT_TYPES: { value: GenerateOutputType; label: string }[] = [
   { value: "evaluation_checklist", label: "Evaluate" },
 ];
 
-const MODES: { value: AskMode; label: string }[] = [
+export const MODES: { value: AskMode; label: string }[] = [
   { value: "auto", label: "Auto" },
   { value: "hybrid", label: "Hybrid" },
   { value: "summaries", label: "Summaries" },
@@ -104,7 +104,7 @@ function writeHistory(projectId: string, entries: AskEntry[]): void {
 }
 
 /** Small toggle-chip group for a filter dimension. */
-function ChipGroup({
+export function ChipGroup({
   items,
   selected,
   onToggle,

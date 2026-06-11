@@ -50,7 +50,7 @@ export function Sidebar() {
     setChats(listChats(activeProjectId));
   }
 
-  const onLearn = centerMode === "learn" || centerMode === "analyze";
+  const onLearn = centerMode === "learn" || centerMode === "analyze" || centerMode === "dashboard";
 
   function newChat() {
     setActiveChat(null);
@@ -149,7 +149,7 @@ export function Sidebar() {
           <Plus className="size-4" /> New chat
         </button>
         <button
-          onClick={() => setCenterMode("learn")}
+          onClick={() => setCenterMode("dashboard")}
           className={cn(
             "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors",
             onLearn

@@ -11,7 +11,7 @@ const TITLES: Record<CenterMode, { title: string; subtitle: string }> = {
   learn: { title: "Learn", subtitle: "Capture sources, then turn them into goal-relevant knowledge" },
   analyze: { title: "Learn", subtitle: "Turn each source into goal-relevant knowledge" },
   chat: { title: "Chat", subtitle: "Multi-turn conversation over your knowledge base" },
-  dashboard: { title: "Dashboard", subtitle: "Learning status, topics, and project settings" },
+  dashboard: { title: "Learn", subtitle: "Overview — progress, learned topics, and what to learn next" },
   projects: { title: "Projects", subtitle: "All your projects and their settings" },
   "global-settings": { title: "Settings", subtitle: "API keys and local CLI status" },
 };

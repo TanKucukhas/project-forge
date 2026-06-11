@@ -1,44 +1,71 @@
 "use client";
 
 /**
- * Project Dashboard — opened from the project-name corner menu. Shows learning
- * status (captured / learned / % done), the main topics (top categories), and
- * the embedded project settings (goal, taxonomy, model usage, transcript
- * language via ProjectSettings). Read-only stats derived from useSources.
+ * Learn Dashboard (Learning Overview) — the at-a-glance view of a project's
+ * knowledge: learning progress, the topics already learned, what's still open
+ * to learn next, and (collapsed) the project settings. Reachable from the Learn
+ * sub-nav "Overview" tab and the project-name corner menu.
+ *
+ * Read-only stats derived from useSources / useGraph; the only action is jumping
+ * into the Learn list to distill the not-yet-learned sources.
  */
 import { useMemo } from "react";
-import { Target, Layers, CheckCircle2, FileText } from "lucide-react";
+import {
+  Target,
+  Layers,
+  CheckCircle2,
+  FileText,
+  ArrowRight,
+  Sparkles,
+  ChevronRight,
+} from "lucide-react";
 import { useWorkspace } from "@/lib/store";
-import { useProjects, useSources } from "@/lib/api";
+import { useProjects, useSources, useGraph } from "@/lib/api";
+import { tagLabel } from "@/lib/taxonomy";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { ProjectSettings } from "./project-settings";
 
 export function ProjectDashboard() {
   const activeProjectId = useWorkspace((s) => s.activeProjectId);
+  const setCenterMode = useWorkspace((s) => s.setCenterMode);
   const { data: projects } = useProjects();
   const { data } = useSources(activeProjectId);
+  const { data: graph } = useGraph(activeProjectId);
   const project = projects?.find((p) => p.id === activeProjectId);
 
   const sources = useMemo(() => data?.sources ?? [], [data]);
-  const learned = sources.filter((s) => s.status === "distilled").length;
+  const learnedSources = sources.filter((s) => s.status === "distilled");
   const captured = sources.length;
+  const learned = learnedSources.length;
   const pct = captured ? Math.round((learned / captured) * 100) : 0;
 
-  // Top categories by source count (learned + captured).
-  const topCategories = useMemo(() => {
+  // Learned topics = categories among the already-learned sources.
+  const learnedTopics = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const s of sources) {
+    for (const s of learnedSources) {
       if (s.category) counts.set(s.category, (counts.get(s.category) ?? 0) + 1);
     }
-    return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
-  }, [sources]);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  }, [learnedSources]);
+
+  // Open to learn = captured but not yet learned (and not still capturing).
+  const toLearn = useMemo(
+    () => sources.filter((s) => s.status === "processed"),
+    [sources],
+  );
+
+  const topTags = (graph?.tags ?? []).slice(0, 16);
 
   if (!project) return null;
 
   return (
-    <div className="space-y-6">
+    <div className="mx-auto max-w-4xl space-y-6">
       <div>
+        <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+          Learning overview
+        </p>
         <h2 className="text-lg font-semibold">{project.title}</h2>
         {project.goal && (
           <p className="mt-1 flex items-start gap-1.5 text-sm text-muted-foreground">
@@ -48,39 +75,111 @@ export function ProjectDashboard() {
         )}
       </div>
 
-      {/* Learning status */}
-      <div className="grid grid-cols-3 gap-3">
-        <StatCard icon={FileText} label="Captured" value={captured} />
-        <StatCard icon={CheckCircle2} label="Learned" value={learned} />
-        <StatCard icon={Layers} label="Progress" value={`${pct}%`} />
-      </div>
-      <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-        <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${pct}%` }} />
+      {/* Learning progress */}
+      <div>
+        <div className="grid grid-cols-3 gap-3">
+          <StatCard icon={FileText} label="Captured" value={captured} />
+          <StatCard icon={CheckCircle2} label="Learned" value={learned} />
+          <StatCard icon={Layers} label="Progress" value={`${pct}%`} />
+        </div>
+        <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted">
+          <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${pct}%` }} />
+        </div>
       </div>
 
-      {/* Main topics */}
-      <div className="space-y-2">
-        <h3 className="text-sm font-medium">Main topics</h3>
-        {topCategories.length ? (
+      {/* Learned topics */}
+      <section className="space-y-2">
+        <h3 className="text-sm font-medium">Topics learned</h3>
+        {learnedTopics.length ? (
           <div className="flex flex-wrap gap-1.5">
-            {topCategories.map(([cat, n]) => (
-              <Badge key={cat} variant="outline" className="font-normal">
+            {learnedTopics.map(([cat, n]) => (
+              <Badge key={cat} variant="secondary" className="font-normal">
                 {cat} · {n}
               </Badge>
             ))}
           </div>
         ) : (
           <p className="text-sm text-muted-foreground">
-            No categories yet — learn some sources to populate topics.
+            Nothing learned yet — distill some captured sources to build topics.
           </p>
         )}
-      </div>
+        {topTags.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 pt-1">
+            <span className="text-xs text-muted-foreground">Tags:</span>
+            {topTags.map((t) => (
+              <Badge key={t} variant="outline" className="font-normal">
+                #{tagLabel(t)}
+              </Badge>
+            ))}
+          </div>
+        )}
+      </section>
 
-      {/* Embedded project settings (goal · taxonomy · model usage · language) */}
-      <div className="space-y-2 border-t pt-5">
-        <h3 className="text-sm font-medium">Project settings</h3>
-        <ProjectSettings projectId={activeProjectId ?? undefined} />
-      </div>
+      {/* Open to learn next */}
+      <section className="space-y-2">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-medium">
+            Open to learn{toLearn.length ? ` · ${toLearn.length}` : ""}
+          </h3>
+          {toLearn.length > 0 && (
+            <Button size="sm" variant="outline" onClick={() => setCenterMode("analyze")}>
+              <Sparkles className="size-3.5" /> Go to Learn <ArrowRight className="size-3.5" />
+            </Button>
+          )}
+        </div>
+        {toLearn.length === 0 ? (
+          <Card className="p-4 text-sm text-muted-foreground">
+            {captured === 0 ? (
+              <>
+                No sources captured yet.{" "}
+                <button onClick={() => setCenterMode("learn")} className="underline hover:text-foreground">
+                  Capture your first source
+                </button>
+                .
+              </>
+            ) : (
+              "Everything captured has been learned. 🎉"
+            )}
+          </Card>
+        ) : (
+          <div className="divide-y overflow-hidden rounded-lg border bg-card">
+            {toLearn.slice(0, 8).map((s) => (
+              <button
+                key={s.id}
+                onClick={() => setCenterMode("analyze")}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors hover:bg-muted/50"
+              >
+                <FileText className="size-4 shrink-0 text-muted-foreground" />
+                <span className="min-w-0 flex-1 truncate">{s.title}</span>
+                <span className="shrink-0 text-xs capitalize text-muted-foreground">{s.type}</span>
+                <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
+              </button>
+            ))}
+            {toLearn.length > 8 && (
+              <button
+                onClick={() => setCenterMode("analyze")}
+                className="flex w-full items-center justify-center px-3 py-2 text-xs text-muted-foreground hover:bg-muted/50"
+              >
+                +{toLearn.length - 8} more in Learn
+              </button>
+            )}
+          </div>
+        )}
+      </section>
+
+      {/* Project settings (collapsed) */}
+      <details className="group rounded-lg border bg-card">
+        <summary className="flex cursor-pointer items-center gap-1.5 px-4 py-3 text-sm font-medium select-none">
+          <ChevronRight className="size-4 transition-transform group-open:rotate-90" />
+          Project settings
+          <span className="text-xs font-normal text-muted-foreground">
+            goal · taxonomy · model · language
+          </span>
+        </summary>
+        <div className="border-t p-4">
+          <ProjectSettings projectId={activeProjectId ?? undefined} />
+        </div>
+      </details>
     </div>
   );
 }
