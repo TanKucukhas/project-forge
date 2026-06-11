@@ -163,6 +163,8 @@ export function CenterPanel() {
   const PAGE = 30;
   const [selectedSources, setSelectedSources] = useState<Set<string>>(new Set());
   const [expandedHistory, setExpandedHistory] = useState<Set<string>>(new Set());
+  // Capture grid filter by source type (All | Youtube | Raw Text | PDF).
+  const [captureFilter, setCaptureFilter] = useState<"all" | "youtube" | "text" | "pdf">("all");
   // Optimistically mark sources just sent to Learn, so the spinner/lock shows
   // instantly (before the ~1s jobs poll picks the job up). Auto-clears; the real
   // queued/running job state takes over from the jobs poll.
@@ -996,41 +998,68 @@ export function CenterPanel() {
               </DialogContent>
             </Dialog>
 
-            {/* Capturing / Captured sub-tabs */}
-            <Tabs defaultValue="captured" className="mt-1">
-              <TabsList variant="line">
-                <TabsTrigger value="capturing">
-                  Capturing{activeCaptureJobs.length ? ` · ${activeCaptureJobs.length}` : ""}
-                </TabsTrigger>
-                <TabsTrigger value="captured">
-                  Captured{sources.length ? ` · ${sources.length}` : ""}
-                </TabsTrigger>
-              </TabsList>
-
-              <TabsContent value="capturing" className="mt-3 space-y-2">
-                {activeCaptureJobs.length === 0 ? (
-                  <Card className="p-6 text-sm text-muted-foreground">
-                    Nothing capturing right now. Click <strong>Capture</strong> to add a source.
-                  </Card>
-                ) : (
-                  <div className="divide-y overflow-hidden rounded-lg border bg-card">
-                    {activeCaptureJobs.map((job) => (
-                      <div key={job.id} className="flex items-center gap-2.5 px-3 py-2.5 text-sm">
-                        <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
-                        <span className="flex-1 truncate">{job.label}</span>
-                        <Badge variant="secondary" className="font-normal capitalize">
-                          {job.status}
-                        </Badge>
-                      </div>
-                    ))}
+            {/* All captured sources, filtered by source type. In-progress
+                captures appear inline under their type with a progress bar. */}
+            {(() => {
+              const isText = (t: string) => t !== "youtube" && t !== "pdf";
+              const matchesFilter = (t: string) =>
+                captureFilter === "all"
+                  ? true
+                  : captureFilter === "youtube"
+                    ? t === "youtube"
+                    : captureFilter === "pdf"
+                      ? t === "pdf"
+                      : isText(t);
+              const FILTERS: { value: typeof captureFilter; label: string }[] = [
+                { value: "all", label: "All" },
+                { value: "youtube", label: "Youtube" },
+                { value: "text", label: "Raw Text" },
+                { value: "pdf", label: "PDF" },
+              ];
+              const filtered = sources.filter((s) => matchesFilter(s.type));
+              return (
+                <div className="mt-1 space-y-3">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {FILTERS.map((f) => {
+                      const n =
+                        f.value === "all" ? sources.length : sources.filter((s) => {
+                          if (f.value === "youtube") return s.type === "youtube";
+                          if (f.value === "pdf") return s.type === "pdf";
+                          return isText(s.type);
+                        }).length;
+                      return (
+                        <button
+                          key={f.value}
+                          onClick={() => setCaptureFilter(f.value)}
+                          className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                            captureFilter === f.value
+                              ? "border-primary bg-primary/10 text-primary"
+                              : "text-muted-foreground hover:bg-muted"
+                          }`}
+                        >
+                          {f.label}
+                          {n ? ` · ${n}` : ""}
+                        </button>
+                      );
+                    })}
+                    {activeCaptureJobs.length > 0 && (
+                      <span className="ml-auto flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <Loader2 className="size-3 animate-spin" /> {activeCaptureJobs.length} capturing…
+                      </span>
+                    )}
                   </div>
-                )}
-              </TabsContent>
 
-              <TabsContent value="captured" className="mt-3 space-y-2">
-            {sources.length > 0 ? (
+                  {sources.length === 0 ? (
+                    <Card className="p-6 text-sm text-muted-foreground">
+                      No sources captured yet. Click <strong>Capture</strong> to add your first one.
+                    </Card>
+                  ) : filtered.length === 0 ? (
+                    <Card className="p-6 text-sm text-muted-foreground">
+                      No {FILTERS.find((f) => f.value === captureFilter)?.label} sources yet.
+                    </Card>
+                  ) : (
                 <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-                  {sources.map((s) => {
+                  {filtered.map((s) => {
                     const vid = videoIdOf(s.url);
                     // Prefer YouTube's thumbnail; otherwise the article's og:image.
                     const thumb = vid ? `https://i.ytimg.com/vi/${vid}/hqdefault.jpg` : s.thumbnail;
@@ -1076,6 +1105,12 @@ export function CenterPanel() {
                             </span>
                           )}
                         </div>
+                        {/* In-progress capture: animated strip until the snapshot lands. */}
+                        {s.status === "pending" && (
+                          <div className="h-1 w-full overflow-hidden bg-amber-500/20">
+                            <div className="h-full w-1/2 animate-pulse rounded-r bg-amber-500" />
+                          </div>
+                        )}
                         <div className="flex flex-1 flex-col gap-1 p-2.5">
                           <div className="line-clamp-2 text-sm font-medium leading-snug">{s.title}</div>
                           <div className="mt-auto flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
@@ -1101,13 +1136,10 @@ export function CenterPanel() {
                     );
                   })}
                 </div>
-            ) : (
-              <Card className="p-6 text-sm text-muted-foreground">
-                No sources captured yet. Click <strong>Capture</strong> to add your first one.
-              </Card>
-            )}
-              </TabsContent>
-            </Tabs>
+                  )}
+                </div>
+              );
+            })()}
           </TabsContent>
 
           {/* DISTILL — goal-aware minimize */}
