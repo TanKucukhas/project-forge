@@ -35,9 +35,70 @@ import { Button } from "@/components/ui/button";
 import { Markdown } from "@/components/markdown";
 import { ProjectSettings } from "./project-settings";
 
-/** Persisted learning analysis (per project) — disposable, like askHistory. */
-type Analysis = { text: string; modelId: string; createdAt: string };
-const analysisKey = (projectId: string) => `pf.learnAnalysis.${projectId}`;
+// ── Structured analysis schema (model returns JSON; we render it visually) ──
+type CoverageLevel = "strong" | "sufficient" | "thin" | "underweight" | "gap" | "absent";
+type CoverageItem = { category: string; count: number | null; level: CoverageLevel; note?: string };
+type LearnNextItem = {
+  title: string;
+  priority: "high" | "medium" | "low";
+  why: string;
+  suggestedSources?: string;
+  examples?: string;
+};
+type AnalysisData = {
+  rating: { score: number; label: string; summary: string };
+  coverage: CoverageItem[];
+  learnNext: LearnNextItem[];
+};
+
+/** Persisted learning analysis (per project) — disposable, like askHistory.
+ *  v2: stores the parsed structured object + raw fallback. */
+type Analysis = { data: AnalysisData | null; raw: string; modelId: string; createdAt: string };
+const analysisKey = (projectId: string) => `pf.learnAnalysis.v2.${projectId}`;
+
+const COVERAGE_LEVELS: CoverageLevel[] = ["strong", "sufficient", "thin", "underweight", "gap", "absent"];
+
+/** Tolerantly extract the JSON object from a model response (strips code fences
+ *  and surrounding prose) and validate the minimal shape. */
+function parseAnalysis(text: string): AnalysisData | null {
+  try {
+    let t = text.trim();
+    const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fence) t = fence[1].trim();
+    const start = t.indexOf("{");
+    const end = t.lastIndexOf("}");
+    if (start < 0 || end <= start) return null;
+    const obj = JSON.parse(t.slice(start, end + 1)) as Partial<AnalysisData>;
+    if (!obj.rating || !Array.isArray(obj.coverage) || !Array.isArray(obj.learnNext)) return null;
+    return {
+      rating: {
+        score: Math.max(0, Math.min(100, Number(obj.rating.score) || 0)),
+        label: String(obj.rating.label ?? ""),
+        summary: String(obj.rating.summary ?? ""),
+      },
+      coverage: obj.coverage
+        .filter((c): c is CoverageItem => Boolean(c?.category))
+        .map((c) => ({
+          category: String(c.category),
+          count: c.count == null ? null : Number(c.count),
+          level: COVERAGE_LEVELS.includes(c.level) ? c.level : "thin",
+          note: c.note ? String(c.note) : undefined,
+        })),
+      learnNext: obj.learnNext
+        .filter((l): l is LearnNextItem => Boolean(l?.title))
+        .slice(0, 4)
+        .map((l) => ({
+          title: String(l.title),
+          priority: l.priority === "high" || l.priority === "low" ? l.priority : "medium",
+          why: String(l.why ?? ""),
+          suggestedSources: l.suggestedSources ? String(l.suggestedSources) : undefined,
+          examples: l.examples ? String(l.examples) : undefined,
+        })),
+    };
+  } catch {
+    return null;
+  }
+}
 
 function readAnalysis(projectId: string | null): Analysis | null {
   if (!projectId || typeof window === "undefined") return null;
@@ -121,9 +182,8 @@ export function ProjectDashboard() {
       ? toLearn.slice(0, 40).map((s) => `- ${s.title} [${s.type}]`).join("\n")
       : "- (none — everything captured is learned)";
     return `You are a learning strategist for a knowledge-to-project compiler. Analyze the
-current state of this project's knowledge base against its GOAL and advise what
-to do next. Be concrete and prioritized — the user wants to know where the gaps
-are and what to learn next.
+current state of this project's knowledge base against its GOAL and return a
+structured assessment of how ready it is and what to learn next.
 
 PROJECT: ${project?.title ?? ""}
 GOAL: ${project?.goal || "(no goal set)"}
@@ -144,13 +204,34 @@ GAMES/REFERENCES: ${gameNames.length ? gameNames.join(", ") : "(none)"}
 SOURCES NOT YET LEARNED:
 ${notLearnedLine}
 
-Write a tight, actionable analysis in markdown with these short sections:
-## Status — where this knowledge base stands relative to the GOAL.
-## Coverage & gaps — which topics are well covered; which are thin or missing
-for achieving the GOAL.
-## Learn next — a prioritized list of concrete next steps (specific topics to
-seek out, source types to capture, or which not-yet-learned sources to distill
-first, and why). Keep it brief and skimmable.`;
+Respond with ONLY a JSON object (no prose, no markdown, no code fences) of EXACTLY this shape:
+{
+  "rating": {
+    "score": <integer 0-100: how ready this KB is to achieve the GOAL>,
+    "label": "<3-6 word verdict, e.g. 'Mature, with targeted gaps'>",
+    "summary": "<1-2 sentence status relative to the GOAL>"
+  },
+  "coverage": [
+    {
+      "category": "<topic/category name>",
+      "count": <number of sources, or null if unknown>,
+      "level": "<one of: strong | sufficient | thin | underweight | gap | absent>",
+      "note": "<short phrase on what's covered or missing>"
+    }
+    // one entry per meaningful category — include both well-covered AND weak/missing
+    // ones; order from strongest to weakest. 8-14 entries.
+  ],
+  "learnNext": [
+    {
+      "title": "<the topic to learn next>",
+      "priority": "<high | medium | low>",
+      "why": "<1-2 sentences: why this matters for the GOAL>",
+      "suggestedSources": "<e.g. '8-12 sources'>",
+      "examples": "<optional: specific talks/people/sources to seek>"
+    }
+    // EXACTLY 3 or 4 items, highest ROI first.
+  ]
+}`;
   }
 
   async function analyze() {
@@ -164,11 +245,10 @@ first, and why). Keep it brief and skimmable.`;
       });
       const json = (await res.json()) as { output?: string; error?: string };
       if (!res.ok) throw new Error(json.error ?? "Analysis failed.");
-      const entry: Analysis = {
-        text: json.output ?? "",
-        modelId,
-        createdAt: new Date().toISOString(),
-      };
+      const raw = json.output ?? "";
+      const data = parseAnalysis(raw);
+      if (!data) toast.message("Couldn't structure the analysis — showing raw text.");
+      const entry: Analysis = { data, raw, modelId, createdAt: new Date().toISOString() };
       setAnalysis(entry);
       writeAnalysis(activeProjectId, entry);
     } catch (e) {
@@ -190,10 +270,10 @@ first, and why). Keep it brief and skimmable.`;
     <div className="mx-auto max-w-4xl space-y-6">
       {/* AI learning analysis — pinned suggestion of what to do next. */}
       {analysis ? (
-        <Card className="space-y-2 border-primary/30 bg-primary/[0.03] p-4">
+        <Card className="space-y-4 border-primary/30 bg-primary/[0.03] p-4">
           <div className="flex flex-wrap items-center gap-2">
             <Brain className="size-4 text-primary" />
-            <span className="text-sm font-semibold">Suggested next steps</span>
+            <span className="text-sm font-semibold">Learning analysis</span>
             <span className="text-xs text-muted-foreground">
               {analysis.modelId} · {analysis.createdAt.slice(0, 16).replace("T", " ")}
             </span>
@@ -207,7 +287,11 @@ first, and why). Keep it brief and skimmable.`;
               </Button>
             </div>
           </div>
-          <Markdown>{analysis.text}</Markdown>
+          {analysis.data ? (
+            <AnalysisView data={analysis.data} />
+          ) : (
+            <Markdown>{analysis.raw}</Markdown>
+          )}
         </Card>
       ) : (
         <Card className="flex flex-wrap items-center gap-3 border-dashed p-4">
@@ -348,6 +432,128 @@ first, and why). Keep it brief and skimmable.`;
         </div>
       </details>
     </div>
+  );
+}
+
+/** Visual config per coverage level — bar fill %, color, label. */
+const LEVEL_META: Record<CoverageLevel, { label: string; bar: string; text: string; pct: number }> = {
+  strong: { label: "Strong", bar: "bg-emerald-500", text: "text-emerald-600", pct: 100 },
+  sufficient: { label: "Sufficient", bar: "bg-teal-500", text: "text-teal-600", pct: 78 },
+  thin: { label: "Thin", bar: "bg-amber-500", text: "text-amber-600", pct: 52 },
+  underweight: { label: "Underweight", bar: "bg-orange-500", text: "text-orange-600", pct: 36 },
+  gap: { label: "Gap", bar: "bg-rose-500", text: "text-rose-600", pct: 18 },
+  absent: { label: "Absent", bar: "bg-rose-400/60", text: "text-rose-500", pct: 6 },
+};
+
+/** Render the model's structured learning analysis: rating gauge, per-topic
+ *  coverage bars, and the prioritized "learn next" cards. */
+function AnalysisView({ data }: { data: AnalysisData }) {
+  const { rating, coverage, learnNext } = data;
+  const scoreColor =
+    rating.score >= 75 ? "text-emerald-600" : rating.score >= 50 ? "text-amber-600" : "text-rose-600";
+  const scoreBar =
+    rating.score >= 75 ? "bg-emerald-500" : rating.score >= 50 ? "bg-amber-500" : "bg-rose-500";
+
+  return (
+    <div className="space-y-5">
+      {/* Learn rating */}
+      <div className="flex items-center gap-4 rounded-lg border bg-card p-4">
+        <div className="flex flex-col items-center">
+          <span className={`text-3xl font-bold leading-none ${scoreColor}`}>{rating.score}</span>
+          <span className="mt-1 text-[10px] uppercase tracking-wide text-muted-foreground">/ 100</span>
+        </div>
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-semibold">{rating.label || "Learn rating"}</span>
+            <Badge variant="outline" className="font-normal">
+              Learn rating
+            </Badge>
+          </div>
+          <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+            <div className={`h-full rounded-full ${scoreBar}`} style={{ width: `${rating.score}%` }} />
+          </div>
+          {rating.summary && <p className="text-xs text-muted-foreground">{rating.summary}</p>}
+        </div>
+      </div>
+
+      {/* Coverage by topic */}
+      {coverage.length > 0 && (
+        <div className="space-y-2">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Coverage by topic
+          </h4>
+          <div className="space-y-2.5">
+            {coverage.map((c) => {
+              const m = LEVEL_META[c.level];
+              return (
+                <div key={c.category} className="space-y-1">
+                  <div className="flex items-baseline gap-2 text-sm">
+                    <span className="min-w-0 flex-1 truncate font-medium">{c.category}</span>
+                    {c.count != null && (
+                      <span className="shrink-0 text-xs text-muted-foreground">{c.count}</span>
+                    )}
+                    <span className={`shrink-0 text-[11px] font-medium ${m.text}`}>{m.label}</span>
+                  </div>
+                  <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                    <div className={`h-full rounded-full ${m.bar}`} style={{ width: `${m.pct}%` }} />
+                  </div>
+                  {c.note && <p className="text-[11px] text-muted-foreground">{c.note}</p>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Learn next — top priorities */}
+      {learnNext.length > 0 && (
+        <div className="space-y-2">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Learn next
+          </h4>
+          <div className="space-y-2">
+            {learnNext.map((l, i) => (
+              <div key={i} className="rounded-lg border bg-card p-3">
+                <div className="flex items-center gap-2">
+                  <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
+                    {i + 1}
+                  </span>
+                  <span className="min-w-0 flex-1 text-sm font-medium">{l.title}</span>
+                  <PriorityBadge priority={l.priority} />
+                </div>
+                {l.why && <p className="mt-1 pl-7 text-xs text-muted-foreground">{l.why}</p>}
+                {(l.suggestedSources || l.examples) && (
+                  <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 pl-7">
+                    {l.suggestedSources && (
+                      <Badge variant="secondary" className="font-normal">
+                        {l.suggestedSources}
+                      </Badge>
+                    )}
+                    {l.examples && (
+                      <span className="text-[11px] text-muted-foreground">e.g. {l.examples}</span>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PriorityBadge({ priority }: { priority: "high" | "medium" | "low" }) {
+  const cls =
+    priority === "high"
+      ? "border-rose-500/50 text-rose-600"
+      : priority === "medium"
+        ? "border-amber-500/50 text-amber-600"
+        : "border-muted-foreground/30 text-muted-foreground";
+  return (
+    <Badge variant="outline" className={`shrink-0 font-normal capitalize ${cls}`}>
+      {priority}
+    </Badge>
   );
 }
 
