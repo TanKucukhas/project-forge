@@ -449,6 +449,7 @@ const LEVEL_META: Record<CoverageLevel, { label: string; bar: string; text: stri
  *  coverage bars, and the prioritized "learn next" cards. */
 function AnalysisView({ data }: { data: AnalysisData }) {
   const { rating, coverage, learnNext } = data;
+  const [coverageOpen, setCoverageOpen] = useState(false);
   const scoreColor =
     rating.score >= 75 ? "text-emerald-600" : rating.score >= 50 ? "text-amber-600" : "text-rose-600";
   const scoreBar =
@@ -476,32 +477,59 @@ function AnalysisView({ data }: { data: AnalysisData }) {
         </div>
       </div>
 
-      {/* Coverage by topic */}
+      {/* Coverage by topic — collapsed by default (it's a long list). */}
       {coverage.length > 0 && (
         <div className="space-y-2">
-          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            Coverage by topic
-          </h4>
-          <div className="space-y-2.5">
-            {coverage.map((c) => {
-              const m = LEVEL_META[c.level];
-              return (
-                <div key={c.category} className="space-y-1">
-                  <div className="flex items-baseline gap-2 text-sm">
-                    <span className="min-w-0 flex-1 truncate font-medium">{c.category}</span>
-                    {c.count != null && (
-                      <span className="shrink-0 text-xs text-muted-foreground">{c.count}</span>
-                    )}
-                    <span className={`shrink-0 text-[11px] font-medium ${m.text}`}>{m.label}</span>
+          <button
+            onClick={() => setCoverageOpen((o) => !o)}
+            className="flex w-full items-center gap-1.5 text-left"
+          >
+            <ChevronRight
+              className={`size-3.5 shrink-0 text-muted-foreground transition-transform ${coverageOpen ? "rotate-90" : ""}`}
+            />
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Coverage by topic ({coverage.length})
+            </span>
+            {/* Collapsed glance: a stacked mini-bar of the level distribution. */}
+            {!coverageOpen && (
+              <span className="ml-auto flex h-1.5 w-28 overflow-hidden rounded-full bg-muted">
+                {COVERAGE_LEVELS.map((lvl) => {
+                  const n = coverage.filter((c) => c.level === lvl).length;
+                  if (!n) return null;
+                  return (
+                    <span
+                      key={lvl}
+                      className={LEVEL_META[lvl].bar}
+                      style={{ width: `${(n / coverage.length) * 100}%` }}
+                      title={`${n} ${LEVEL_META[lvl].label}`}
+                    />
+                  );
+                })}
+              </span>
+            )}
+          </button>
+          {coverageOpen && (
+            <div className="space-y-2.5">
+              {coverage.map((c) => {
+                const m = LEVEL_META[c.level];
+                return (
+                  <div key={c.category} className="space-y-1">
+                    <div className="flex items-baseline gap-2 text-sm">
+                      <span className="min-w-0 flex-1 truncate font-medium">{c.category}</span>
+                      {c.count != null && (
+                        <span className="shrink-0 text-xs text-muted-foreground">{c.count}</span>
+                      )}
+                      <span className={`shrink-0 text-[11px] font-medium ${m.text}`}>{m.label}</span>
+                    </div>
+                    <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                      <div className={`h-full rounded-full ${m.bar}`} style={{ width: `${m.pct}%` }} />
+                    </div>
+                    {c.note && <p className="text-[11px] text-muted-foreground">{c.note}</p>}
                   </div>
-                  <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-                    <div className={`h-full rounded-full ${m.bar}`} style={{ width: `${m.pct}%` }} />
-                  </div>
-                  {c.note && <p className="text-[11px] text-muted-foreground">{c.note}</p>}
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
