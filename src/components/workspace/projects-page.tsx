@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { toast } from "sonner";
-import { Loader2, FolderPlus, Target, Settings, ArrowRight } from "lucide-react";
+import { Loader2, FolderPlus, Target, Settings, ArrowRight, Sparkles } from "lucide-react";
 import { useProjects, useCreateProject } from "@/lib/api";
 import { useWorkspace } from "@/lib/store";
 import {
@@ -10,8 +10,10 @@ import {
   DEFAULT_MODEL_USAGE_POLICY,
   TRANSCRIPT_LANGUAGE_OPTIONS,
   DEFAULT_TRANSCRIPT_LANGUAGE,
+  needsPaidConfirm,
   type ModelUsagePolicy,
 } from "@/lib/settings";
+import { getModelOption } from "@/lib/ai/models";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
@@ -153,8 +155,10 @@ export function ProjectsPage() {
 
 function NewProjectForm({ onCreated }: { onCreated: (id: string) => void }) {
   const create = useCreateProject();
+  const modelId = useWorkspace((s) => s.modelId);
   const [title, setTitle] = useState("");
   const [goal, setGoal] = useState("");
+  const [generating, setGenerating] = useState(false);
   const [modelUsagePolicy, setModelUsagePolicy] = useState<ModelUsagePolicy>(
     DEFAULT_MODEL_USAGE_POLICY,
   );
@@ -163,6 +167,50 @@ function NewProjectForm({ onCreated }: { onCreated: (id: string) => void }) {
   const titleValid = title.trim().length >= MIN_TITLE;
   const goalValid = goal.trim().length >= MIN_GOAL;
   const canCreate = titleValid && goalValid && !create.isPending;
+
+  /** Draft (or refine) the project goal from the project name via the model. */
+  async function generateGoal() {
+    const topic = title.trim() || goal.trim();
+    if (topic.length < MIN_TITLE) {
+      toast.error("Enter a project name first, so AI can draft a goal for it.");
+      return;
+    }
+    if (
+      needsPaidConfirm(modelUsagePolicy, modelId) &&
+      !window.confirm(`${getModelOption(modelId).label} is a paid model and will use API credits. Continue?`)
+    ) {
+      return;
+    }
+    setGenerating(true);
+    try {
+      const draft = goal.trim();
+      const prompt = `You are helping define a project for ProjectForge, a local-first knowledge-to-project compiler. A project has a single GOAL that steers what knowledge to learn and what build-ready outputs to generate.
+
+Write a clear, specific project GOAL (2-4 sentences) for this project.
+PROJECT NAME / TOPIC: ${topic}
+${draft ? `EXISTING DRAFT TO REFINE: ${draft}\n` : ""}
+The goal should state what the user wants to learn AND what they intend to produce from that knowledge (e.g. concepts, design docs, specs, agent build prompts). Be concrete and outcome-oriented.
+
+Return ONLY the goal text — no preamble, no quotes, no markdown.`;
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ modelId, prompt }),
+      });
+      const json = (await res.json()) as { output?: string; error?: string };
+      if (!res.ok) throw new Error(json.error ?? "Generation failed.");
+      const text = String(json.output ?? "")
+        .trim()
+        .replace(/^["']+|["']+$/g, "")
+        .trim();
+      if (text) setGoal(text);
+      else toast.error("The model returned an empty goal.");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not generate a goal.");
+    } finally {
+      setGenerating(false);
+    }
+  }
 
   async function onCreate() {
     if (!canCreate) return;
@@ -194,9 +242,27 @@ function NewProjectForm({ onCreated }: { onCreated: (id: string) => void }) {
       </div>
 
       <div className="space-y-1.5">
-        <label htmlFor="np-goal" className="text-sm font-medium">
-          Project goal
-        </label>
+        <div className="flex items-center justify-between gap-2">
+          <label htmlFor="np-goal" className="text-sm font-medium">
+            Project goal
+          </label>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-7 text-xs"
+            onClick={generateGoal}
+            disabled={generating}
+            title={title.trim() ? "Draft a goal from the project name" : "Enter a project name first"}
+          >
+            {generating ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Sparkles className="size-3.5" />
+            )}
+            {goal.trim() ? "Refine with AI" : "Generate with AI"}
+          </Button>
+        </div>
         <Textarea
           id="np-goal"
           rows={4}
