@@ -135,8 +135,8 @@ export function Sidebar() {
         )}
       </div>
 
-      {/* New chat */}
-      <div className="px-3 pb-2">
+      {/* New chat + Learn — project-scoped actions */}
+      <div className="space-y-1 px-3 pb-2">
         <button
           onClick={newChat}
           className={cn(
@@ -147,6 +147,17 @@ export function Sidebar() {
           )}
         >
           <Plus className="size-4" /> New chat
+        </button>
+        <button
+          onClick={() => setCenterMode("learn")}
+          className={cn(
+            "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors",
+            onLearn
+              ? "bg-primary/10 font-medium text-primary"
+              : "text-muted-foreground hover:bg-muted hover:text-foreground",
+          )}
+        >
+          <Sparkles className="size-4 shrink-0" /> Learn
         </button>
       </div>
 
@@ -183,20 +194,8 @@ export function Sidebar() {
         )}
       </nav>
 
-      {/* Footer: Learn + Settings */}
+      {/* Footer: global Settings only */}
       <div className="space-y-1 border-t p-3">
-        <button
-          onClick={() => setCenterMode("learn")}
-          className={cn(
-            "flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm transition-colors",
-            onLearn
-              ? "bg-primary/10 font-medium text-primary"
-              : "text-muted-foreground hover:bg-muted hover:text-foreground",
-          )}
-        >
-          <Sparkles className="size-[18px] shrink-0" />
-          <span className="flex-1">Learn</span>
-        </button>
         <button
           onClick={() => setCenterMode("global-settings")}
           className={cn(
