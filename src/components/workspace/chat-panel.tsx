@@ -33,7 +33,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Markdown } from "@/components/markdown";
-import { RetrievedList, MODE_LABEL, MODES, ChipGroup } from "./ask-panel";
+import { RetrievedList, MODE_LABEL, MODES } from "./ask-panel";
 
 const OUTPUT_TYPES: { value: GenerateOutputType; label: string }[] = [
   { value: "answer", label: "Answer" },
@@ -318,7 +318,7 @@ export function ChatPanel() {
       </div>
 
       {activeFilters.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex max-h-24 flex-wrap gap-1.5 overflow-y-auto">
           {activeFilters.map((f) => (
             <Badge key={f.k} variant="outline" className="gap-1 font-normal">
               {f.label}
@@ -331,7 +331,7 @@ export function ChatPanel() {
       )}
 
       {advanced && (
-        <div className="space-y-3 rounded-lg border bg-muted/30 p-3">
+        <div className="max-h-[42vh] space-y-3 overflow-y-auto rounded-lg border bg-muted/30 p-3">
           <ScopeRow label="Mode">
             <div className="flex flex-wrap gap-1.5">
               {MODES.map((m) => (
@@ -350,13 +350,22 @@ export function ChatPanel() {
             </div>
           </ScopeRow>
           <ScopeRow label="Topics">
-            <ChipGroup items={categories.map((c) => c.name)} selected={cats} onToggle={(v) => toggle(setCats, v)} />
+            <SearchableChips
+              items={categories.map((c) => c.name)}
+              selected={cats}
+              onToggle={(v) => toggle(setCats, v)}
+            />
           </ScopeRow>
           <ScopeRow label="Tags">
-            <ChipGroup items={graph?.tags ?? []} selected={tags} onToggle={(v) => toggle(setTags, v)} render={tagLabel} />
+            <SearchableChips
+              items={graph?.tags ?? []}
+              selected={tags}
+              onToggle={(v) => toggle(setTags, v)}
+              render={tagLabel}
+            />
           </ScopeRow>
           <ScopeRow label="Authors">
-            <ChipGroup
+            <SearchableChips
               items={(graph?.authors ?? []).map((a) => a.slug)}
               selected={authors}
               onToggle={(v) => toggle(setAuthors, v)}
@@ -365,7 +374,7 @@ export function ChatPanel() {
           </ScopeRow>
           {games.length > 0 && (
             <ScopeRow label="Games">
-              <ChipGroup
+              <SearchableChips
                 items={games.map((g) => g.slug)}
                 selected={gms}
                 onToggle={(v) => toggle(setGms, v)}
@@ -374,11 +383,11 @@ export function ChatPanel() {
             </ScopeRow>
           )}
           <ScopeRow label="Sources">
-            <ChipGroup
+            <SearchableChips
               items={sources.map((s) => s.id)}
               selected={srcs}
               onToggle={(v) => toggle(setSrcs, v)}
-              render={(id) => sources.find((s) => s.id === id)?.title.slice(0, 28) ?? id}
+              render={(id) => sources.find((s) => s.id === id)?.title.slice(0, 40) ?? id}
             />
           </ScopeRow>
         </div>
@@ -493,6 +502,75 @@ export function ChatPanel() {
       {/* Bottom composer to continue */}
       <div className="border-t bg-card/50 p-4">
         <div className="mx-auto max-w-3xl">{composer}</div>
+      </div>
+    </div>
+  );
+}
+
+/** Searchable, height-capped chip picker for a scope dimension. Large lists
+ *  (hundreds of games/authors/sources) get a search box and a scroll region so
+ *  the composer never gets pushed off-screen. Selected chips float to the top. */
+function SearchableChips({
+  items,
+  selected,
+  onToggle,
+  render,
+}: {
+  items: string[];
+  selected: Set<string>;
+  onToggle: (v: string) => void;
+  render?: (v: string) => string;
+}) {
+  const [q, setQ] = useState("");
+  const label = (v: string) => (render ? render(v) : v);
+  if (!items.length) return <span className="text-xs text-muted-foreground">none yet</span>;
+
+  const query = q.trim().toLowerCase();
+  const matches = query ? items.filter((v) => label(v).toLowerCase().includes(query)) : items;
+  // Selected first so chosen items stay visible even in a long list.
+  const ordered = [...matches].sort((a, b) => Number(selected.has(b)) - Number(selected.has(a)));
+  const CAP = 80;
+  const shown = ordered.slice(0, CAP);
+
+  return (
+    <div className="space-y-1.5">
+      {items.length > 10 && (
+        <div className="flex items-center gap-2">
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder={`Search ${items.length}…`}
+            className="h-7 w-full rounded-md border bg-background px-2 text-xs outline-none focus:border-primary"
+          />
+          {selected.size > 0 && (
+            <span className="shrink-0 text-[11px] text-muted-foreground">{selected.size} on</span>
+          )}
+        </div>
+      )}
+      <div className="flex max-h-32 flex-wrap gap-1.5 overflow-y-auto pr-1">
+        {shown.length === 0 ? (
+          <span className="text-xs text-muted-foreground">no matches</span>
+        ) : (
+          shown.map((v) => {
+            const on = selected.has(v);
+            return (
+              <button
+                key={v}
+                onClick={() => onToggle(v)}
+                className={`rounded-full border px-2 py-0.5 text-xs transition-colors ${
+                  on ? "border-primary bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted"
+                }`}
+              >
+                {label(v)}
+              </button>
+            );
+          })
+        )}
+        {ordered.length > CAP && (
+          <span className="self-center text-[11px] text-muted-foreground">
+            +{ordered.length - CAP} more — search to narrow
+          </span>
+        )}
       </div>
     </div>
   );
