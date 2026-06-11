@@ -135,19 +135,8 @@ export function Sidebar() {
         )}
       </div>
 
-      {/* New chat + Learn — project-scoped actions */}
-      <div className="space-y-1 px-3 pb-2">
-        <button
-          onClick={newChat}
-          className={cn(
-            "flex w-full items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition-colors",
-            centerMode === "chat" && !activeChatId
-              ? "border-primary/40 bg-primary/10 text-primary"
-              : "hover:bg-muted",
-          )}
-        >
-          <Plus className="size-4" /> New chat
-        </button>
+      {/* Learn — project-level destination, grouped under the project header. */}
+      <div className="px-3">
         <button
           onClick={() => setCenterMode("dashboard")}
           className={cn(
@@ -158,6 +147,21 @@ export function Sidebar() {
           )}
         >
           <Sparkles className="size-4 shrink-0" /> Learn
+        </button>
+      </div>
+
+      {/* New chat — sits directly above the chat list it creates into. */}
+      <div className="px-3 pb-2 pt-2">
+        <button
+          onClick={newChat}
+          className={cn(
+            "flex w-full items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition-colors",
+            centerMode === "chat" && !activeChatId
+              ? "border-primary/40 bg-primary/10 text-primary"
+              : "hover:bg-muted",
+          )}
+        >
+          <Plus className="size-4" /> New chat
         </button>
       </div>
 
