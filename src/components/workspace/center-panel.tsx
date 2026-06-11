@@ -1498,21 +1498,13 @@ function groupLatestDocs(docs: LearningDoc[]): {
   return { latest, history };
 }
 
-/** A learned doc flags entity review if its distill metadata said so. */
-function needsEntityReview(d: LearningDoc): boolean {
-  if (!d.metadataJson) return false;
-  try {
-    return (JSON.parse(d.metadataJson) as { needs_entity_review?: boolean }).needs_entity_review === true;
-  } catch {
-    return false;
-  }
-}
-
-/** Count-based doc-health banner: says exactly WHAT needs attention (instruction-
- *  stale / taxonomy-stale / older format / unversioned / entity review), not a
- *  vague "something's wrong". Computed over the latest doc per source. */
+/** Count-based doc-health banner: says exactly WHAT changed since these docs were
+ *  learned (instruction / goal / taxonomy / older format / unversioned) so the
+ *  user knows what to re-learn. Per-doc quality notes (e.g. entity review) live in
+ *  the doc modal, not here — they aren't something the user changed. Computed over
+ *  the latest doc per source. */
 function AttentionSummary({ docs, current }: { docs: LearningDoc[]; current?: CurrentDistill }) {
-  const c = { instructions: 0, goal: 0, metadata: 0, schema: 0, unknown: 0, entity: 0 };
+  const c = { instructions: 0, goal: 0, metadata: 0, schema: 0, unknown: 0 };
   for (const d of docs) {
     const s = docStaleness(d, current);
     if (s === "instructions") c.instructions += 1;
@@ -1520,7 +1512,6 @@ function AttentionSummary({ docs, current }: { docs: LearningDoc[]; current?: Cu
     else if (s === "metadata") c.metadata += 1;
     else if (s === "schema") c.schema += 1;
     else if (s === "unknown") c.unknown += 1;
-    if (needsEntityReview(d)) c.entity += 1;
   }
   const parts: string[] = [];
   if (c.instructions) parts.push(`${c.instructions} instruction-stale`);
@@ -1528,7 +1519,6 @@ function AttentionSummary({ docs, current }: { docs: LearningDoc[]; current?: Cu
   if (c.metadata) parts.push(`${c.metadata} taxonomy-stale`);
   if (c.schema) parts.push(`${c.schema} older format`);
   if (c.unknown) parts.push(`${c.unknown} unversioned`);
-  if (c.entity) parts.push(`${c.entity} entity review`);
   if (!parts.length) return null;
   return (
     <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-700">
