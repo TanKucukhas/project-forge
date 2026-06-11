@@ -43,7 +43,8 @@ import { needsPaidConfirm, TRANSCRIPT_LANGUAGE_OPTIONS } from "@/lib/settings";
 import { ProjectsPage } from "./projects-page";
 import { GlobalSettings } from "./global-settings";
 import { LearnInstructions } from "./learn-instructions";
-import { AskPanel } from "./ask-panel";
+import { ChatPanel } from "./chat-panel";
+import { ProjectDashboard } from "./project-dashboard";
 import { LearnedDocView } from "./learned-doc-view";
 import { docStaleness, STALE_HINT, STALE_LABEL, type Staleness } from "@/lib/staleness";
 import { getModelOption } from "@/lib/ai/models";
@@ -574,9 +575,15 @@ export function CenterPanel() {
         onValueChange={(v) => setCenterMode(v as CenterMode)}
         className="flex h-full flex-col"
       >
-        <div className="flex-1 overflow-auto p-6">
+        {/* Chat fills the full height with its own internal scroll + pinned composer. */}
+        <TabsContent value="chat" className="mt-0 min-h-0 flex-1">
+          <ChatPanel />
+        </TabsContent>
+
+        <div className={`flex-1 overflow-auto p-6 ${centerMode === "chat" ? "hidden" : ""}`}>
           {/* CAPTURE */}
           <TabsContent value="learn" className="mt-0 space-y-4">
+            <LearnSubNav mode={centerMode} onMode={setCenterMode} />
             <div className="flex items-center justify-between gap-3">
               <p className="text-sm text-muted-foreground">
                 Add a YouTube video, a whole channel, a web link, a PDF, or pasted notes — one
@@ -1105,6 +1112,7 @@ export function CenterPanel() {
 
           {/* DISTILL — goal-aware minimize */}
           <TabsContent value="analyze" className="mt-0 space-y-4">
+            <LearnSubNav mode={centerMode} onMode={setCenterMode} />
             <p className="text-sm text-muted-foreground">
               Run <strong>{modelId}</strong> to compress each source down to only what serves the
               project goal — with a category, tags, and a relevance score. Raw text is kept; you
@@ -1304,9 +1312,8 @@ export function CenterPanel() {
             </Tabs>
           </TabsContent>
 
-          {/* ASK — knowledge command center (see ask-panel.tsx) */}
-          <TabsContent value="ask" className="mt-0">
-            <AskPanel />
+          <TabsContent value="dashboard" className="mt-0">
+            <ProjectDashboard />
           </TabsContent>
 
           <TabsContent value="projects" className="mt-0">
@@ -1471,6 +1478,30 @@ function LoadingLine() {
   return (
     <div className="flex items-center gap-2 text-sm text-muted-foreground">
       <Loader2 className="size-4 animate-spin" /> Working…
+    </div>
+  );
+}
+
+/** Sub-nav for the merged Learn screen: Capture (centerMode "learn") and the
+ *  distill lists (centerMode "analyze") live under one sidebar "Learn" button. */
+function LearnSubNav({ mode, onMode }: { mode: CenterMode; onMode: (m: CenterMode) => void }) {
+  const tabs: { value: CenterMode; label: string }[] = [
+    { value: "learn", label: "Capture" },
+    { value: "analyze", label: "Learn" },
+  ];
+  return (
+    <div className="inline-flex rounded-lg border bg-muted/40 p-0.5">
+      {tabs.map((t) => (
+        <button
+          key={t.value}
+          onClick={() => onMode(t.value)}
+          className={`rounded-md px-3 py-1 text-sm font-medium transition-colors ${
+            mode === t.value ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          {t.label}
+        </button>
+      ))}
     </div>
   );
 }

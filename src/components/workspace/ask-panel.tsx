@@ -59,7 +59,7 @@ const EXAMPLES = [
   "Use @peter_molyneux and #indirect-control to propose a god-game prototype",
 ];
 
-const MODE_LABEL: Record<string, string> = {
+export const MODE_LABEL: Record<string, string> = {
   auto: "Auto",
   hybrid: "Hybrid",
   summaries: "Learned summaries",
@@ -711,7 +711,7 @@ const CONTEXT_LABEL: Record<string, string> = {
   metadata: "metadata match",
 };
 
-function RetrievedList({ items, detailed }: { items: RetrievedItem[]; detailed: boolean }) {
+export function RetrievedList({ items, detailed }: { items: RetrievedItem[]; detailed: boolean }) {
   return (
     <div className="space-y-1.5">
       {items.map((it, i) => (

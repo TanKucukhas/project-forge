@@ -9,6 +9,9 @@ interface WorkspaceState {
   activeSourceId: string | null;
   /** Selected chat thread in the chat-centric layout. Null = new-chat hero. */
   activeChatId: string | null;
+  /** Bumped whenever the localStorage chat store mutates, so the sidebar list
+   *  (which reads non-reactive localStorage) re-renders. */
+  chatsVersion: number;
   /** What the Preview modal shows: a saved doc, or a raw source snapshot. Null = closed. */
   preview: { kind: "doc"; path: string } | { kind: "snapshot"; sourceId: string } | null;
   centerMode: CenterMode;
@@ -16,6 +19,7 @@ interface WorkspaceState {
   setActiveProject: (id: string | null) => void;
   setActiveSource: (id: string | null) => void;
   setActiveChat: (id: string | null) => void;
+  bumpChats: () => void;
   previewDoc: (path: string) => void;
   previewSnapshot: (sourceId: string) => void;
   closePreview: () => void;
@@ -27,13 +31,15 @@ export const useWorkspace = create<WorkspaceState>((set) => ({
   activeProjectId: null,
   activeSourceId: null,
   activeChatId: null,
+  chatsVersion: 0,
   preview: null,
-  centerMode: "learn",
+  centerMode: "chat",
   modelId: "claude:sonnet",
   // Switching project clears source, chat, and preview.
   setActiveProject: (id) => set({ activeProjectId: id, activeSourceId: null, activeChatId: null, preview: null }),
   setActiveSource: (id) => set({ activeSourceId: id }),
   setActiveChat: (id) => set({ activeChatId: id }),
+  bumpChats: () => set((s) => ({ chatsVersion: s.chatsVersion + 1 })),
   // Preview now opens as a modal over the current tab — it no longer switches centerMode.
   previewDoc: (path) => set({ preview: { kind: "doc", path } }),
   previewSnapshot: (sourceId) => set({ preview: { kind: "snapshot", sourceId } }),

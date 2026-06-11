@@ -40,7 +40,25 @@ const BodySchema = z.object({
     games: z.array(z.string()).optional(),
     uses: z.array(z.string()).optional(),
   }),
+  // Prior turns of this chat thread (for multi-turn grounding). Bounded server-side.
+  history: z
+    .array(z.object({ request: z.string(), answer: z.string() }))
+    .optional(),
 });
+
+/** Render the last few prior turns as a bounded "conversation so far" block.
+ *  Keeps the prompt small: last 6 turns, each answer truncated. */
+function buildHistoryBlock(history: { request: string; answer: string }[] | undefined): string {
+  if (!history?.length) return "";
+  const recent = history.slice(-6);
+  const turns = recent
+    .map((t, i) => {
+      const a = t.answer.length > 1200 ? `${t.answer.slice(0, 1200)}…` : t.answer;
+      return `Turn ${i + 1}\nUser: ${t.request.trim()}\nAssistant: ${a.trim()}`;
+    })
+    .join("\n\n");
+  return `CONVERSATION SO FAR (earlier turns in this thread — for continuity; the CONTEXT below is freshly retrieved for the latest question):\n${turns}\n\n`;
+}
 
 /**
  * NDJSON stream of events:
@@ -57,7 +75,7 @@ export async function POST(request: NextRequest) {
       { status: 400 },
     );
   }
-  const { projectId, question, modelId, outputType } = parsed.data;
+  const { projectId, question, modelId, outputType, history } = parsed.data;
   const project = getProject(projectId);
   if (!project) return NextResponse.json({ error: "Unknown project." }, { status: 404 });
 
@@ -102,6 +120,7 @@ export async function POST(request: NextRequest) {
           contextCharCount: r.context.length,
         });
 
+        const historyBlock = buildHistoryBlock(history);
         const prompt =
           outputType === "answer"
             ? `Answer the QUESTION using ONLY the CONTEXT from the user's knowledge base.
@@ -110,16 +129,17 @@ Cite the sources you draw on by their bracketed/heading title.
 If the context is insufficient, say so plainly and note what is missing.
 Surface contradictions between sources when relevant.
 Do not invent unsupported facts.
+Use the CONVERSATION SO FAR only for continuity (what "it"/"that" refers to) — facts must still come from the CONTEXT.
 
 PROJECT GOAL:
 ${project.goal || "(none set)"}
 
-QUESTION:
+${historyBlock}QUESTION:
 ${question}
 
 CONTEXT:
 ${r.context.trim()}`
-            : buildGeneratePrompt(project.goal, outputType as GenerateOutputType, question, r.context);
+            : `${historyBlock}${buildGeneratePrompt(project.goal, outputType as GenerateOutputType, question, r.context)}`;
 
         const { output } = await runModelStream(modelId, prompt, (text) => send({ type: "delta", text }));
 

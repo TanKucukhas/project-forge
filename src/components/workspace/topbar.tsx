@@ -8,11 +8,12 @@ import { ModelPicker } from "./model-picker";
 import type { CenterMode } from "@/lib/types";
 
 const TITLES: Record<CenterMode, { title: string; subtitle: string }> = {
-  learn: { title: "Capture", subtitle: "Add videos, channels, articles, PDFs and notes" },
+  learn: { title: "Learn", subtitle: "Capture sources, then turn them into goal-relevant knowledge" },
   analyze: { title: "Learn", subtitle: "Turn each source into goal-relevant knowledge" },
-  ask: { title: "Ask", subtitle: "Query your knowledge base with scoped retrieval" },
+  chat: { title: "Chat", subtitle: "Multi-turn conversation over your knowledge base" },
+  dashboard: { title: "Dashboard", subtitle: "Learning status, topics, and project settings" },
   projects: { title: "Projects", subtitle: "All your projects and their settings" },
-  "global-settings": { title: "Global settings", subtitle: "API keys and local CLI status" },
+  "global-settings": { title: "Settings", subtitle: "API keys and local CLI status" },
 };
 
 export function Topbar() {
@@ -22,7 +23,7 @@ export function Topbar() {
 
   const project = projects?.find((p) => p.id === activeProjectId);
   const meta = TITLES[centerMode];
-  const showModel = centerMode === "analyze" || centerMode === "ask";
+  const showModel = centerMode === "analyze" || centerMode === "learn" || centerMode === "chat";
 
   return (
     <header className="flex h-14 shrink-0 items-center gap-4 border-b bg-card px-6">

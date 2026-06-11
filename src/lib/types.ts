@@ -24,7 +24,8 @@ export type OutputType =
 export type CenterMode =
   | "learn"
   | "analyze"
-  | "ask"
+  | "chat"
+  | "dashboard"
   | "projects"
   | "global-settings";
 
