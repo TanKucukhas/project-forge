@@ -172,6 +172,7 @@ Rules:
  *  or malformed fields never break a distill run (graceful fallback). */
 export const LEARN_OUTPUT_CONTRACT = `Return ONE JSON object and nothing outside it, with exactly this shape:
 {
+  "title": "a concise, specific title for THIS source (max ~80 chars) — essential for pasted notes, which often arrive with a generic placeholder title",
   "category": "the closest canonical category from PROJECT TAXONOMY",
   "original_category": "your own natural label for this source (may differ from canonical)",
   "tags": ["3 to 8 reusable short tags"],

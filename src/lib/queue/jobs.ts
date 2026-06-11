@@ -343,6 +343,13 @@ ${content}`;
   const summaryMarkdown =
     (parsed?.summary_markdown as string | undefined)?.trim() || output.trim();
 
+  // Meaningful title from the distill. Pasted notes arrive with a generic
+  // placeholder ("Pasted note"), so for note sources we adopt this title as the
+  // source's name — it then flows everywhere (scope picker, lists, retrieval).
+  const generatedTitle = (asStr(parsed?.title) || "").trim().slice(0, 120);
+  const adoptTitle = source.type === "note" && generatedTitle.length >= 3;
+  const docTitle = adoptTitle ? generatedTitle : source.title;
+
   // Category: normalize the model's label to a canonical category (from the
   // project's taxonomy), keeping its raw label as original_category when changed.
   const rawCategory = asStr(parsed?.category) || asStr(parsed?.original_category);
@@ -440,7 +447,7 @@ ${content}`;
     source.projectId,
     summaryMarkdown,
     {
-      title: source.title,
+      title: docTitle,
       projectId: source.projectId,
       sourceId: source.id,
       type: source.type,
@@ -493,6 +500,7 @@ ${content}`;
     model: input.modelId,
     metadataJson,
   };
+  if (adoptTitle) patch.title = docTitle;
   if (category) patch.category = category;
   if (relevance != null) patch.relevance = relevance;
   if (utility) patch.utility = utility;
