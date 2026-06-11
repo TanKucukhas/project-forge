@@ -12,7 +12,7 @@
  * Ask uses — this is the conversational presentation layer on top. Threads are
  * persisted per project to localStorage via `src/lib/chat-store.ts`.
  */
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { Loader2, Sparkles, Copy, ChevronRight, MessagesSquare, X, SlidersHorizontal } from "lucide-react";
 import { useWorkspace } from "@/lib/store";
@@ -24,6 +24,7 @@ import {
   type GenerateOutputType,
   type AskScope,
   type AskMode,
+  type PreviewResult,
 } from "@/lib/api";
 import { needsPaidConfirm } from "@/lib/settings";
 import { getModelOption } from "@/lib/ai/models";
@@ -88,6 +89,10 @@ export function ChatPanel() {
   const [gms, setGms] = useState<Set<string>>(new Set());
   const [srcs, setSrcs] = useState<Set<string>>(new Set());
 
+  // Live, model-free cost estimate for the current scope + question.
+  const [estimate, setEstimate] = useState<PreviewResult | null>(null);
+  const [estimating, setEstimating] = useState(false);
+
   const sources = data?.sources ?? [];
   const categories = data?.categories ?? [];
   const games = (graph?.entities ?? []).filter((e) => e.type === "game");
@@ -148,6 +153,45 @@ export function ChatPanel() {
       clear: () => toggle(setSrcs, s),
     })),
   ];
+
+  // Debounced dry-run preview: recompute how many sources + tokens the current
+  // scope+question would pull (model-free, so it's safe to run live).
+  const scopeKey = JSON.stringify([mode, [...cats], [...tags], [...authors], [...gms], [...srcs]]);
+  useEffect(() => {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => {
+      const q = input.trim();
+      if (!activeProjectId || !q) {
+        setEstimate(null);
+        setEstimating(false);
+        return;
+      }
+      const scope: AskScope = { mode };
+      if (cats.size) scope.categories = [...cats];
+      if (tags.size) scope.tags = [...tags];
+      if (authors.size) scope.authors = [...authors];
+      if (gms.size) scope.games = [...gms];
+      if (srcs.size) scope.sourceIds = [...srcs];
+
+      setEstimating(true);
+      fetch("/api/ask/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: activeProjectId, question: q, scope }),
+        signal: ctrl.signal,
+      })
+        .then((r) => (r.ok ? (r.json() as Promise<PreviewResult>) : null))
+        .then((p) => p && setEstimate(p))
+        .catch(() => {})
+        .finally(() => setEstimating(false));
+    }, 450);
+    return () => {
+      ctrl.abort();
+      clearTimeout(t);
+    };
+    // scopeKey captures the filter sets; input/projectId tracked directly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeProjectId, input, scopeKey]);
 
   function toggleEvidence(id: string) {
     setOpenEvidence((prev) => {
@@ -259,6 +303,22 @@ export function ChatPanel() {
     }
   }
 
+  // Token & cost estimate from the dry-run preview (chars→tokens ≈ /4).
+  const model = getModelOption(modelId);
+  const histChars = (current?.turns ?? [])
+    .slice(-6)
+    .reduce((n, t) => n + t.request.length + Math.min(t.answer.length, 1200), 0);
+  const estInputTokens = estimate
+    ? Math.ceil(estimate.contextCharCount / 4) +
+      Math.ceil(input.length / 4) +
+      Math.ceil(histChars / 4) +
+      250 // instruction/prompt overhead
+    : 0;
+  const estOutputTokens = outputType === "answer" ? 600 : 1800;
+  const estCost = model.cost
+    ? (estInputTokens / 1e6) * model.cost.inputPerM + (estOutputTokens / 1e6) * model.cost.outputPerM
+    : null;
+
   const composer = (
     <div className="space-y-2.5">
       <div className="flex flex-wrap gap-1.5">
@@ -316,6 +376,36 @@ export function ChatPanel() {
           {advanced ? "Hide scope" : "Choose scope"}
         </button>
       </div>
+
+      {/* Live cost estimate for the chosen scope (model-free dry run). */}
+      {input.trim() && (
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border bg-muted/30 px-2.5 py-1.5 text-xs">
+          {estimating && !estimate ? (
+            <span className="flex items-center gap-1 text-muted-foreground">
+              <Loader2 className="size-3 animate-spin" /> estimating scope…
+            </span>
+          ) : estimate ? (
+            <>
+              <span className="text-muted-foreground">This scope pulls</span>
+              <Badge variant="secondary" className="font-normal">
+                {estimate.used.length} source{estimate.used.length === 1 ? "" : "s"}
+              </Badge>
+              <span className="text-muted-foreground">
+                {estimate.summaryCount} summaries + {estimate.chunkCount} chunks
+              </span>
+              <span className="text-muted-foreground">
+                · ~{fmtTokens(estInputTokens)} in + ~{fmtTokens(estOutputTokens)} out tokens
+              </span>
+              <span className="font-medium text-foreground">
+                · {estCost != null ? `≈ ${fmtCost(estCost)} est.` : "Free · local model"}
+              </span>
+              {estimating && <Loader2 className="size-3 animate-spin text-muted-foreground" />}
+            </>
+          ) : (
+            <span className="text-muted-foreground">Keep typing to estimate scope size & cost.</span>
+          )}
+        </div>
+      )}
 
       {activeFilters.length > 0 && (
         <div className="flex max-h-24 flex-wrap gap-1.5 overflow-y-auto">
@@ -505,6 +595,14 @@ export function ChatPanel() {
       </div>
     </div>
   );
+}
+
+function fmtTokens(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+}
+
+function fmtCost(c: number): string {
+  return c < 0.01 ? `$${c.toFixed(4)}` : `$${c.toFixed(2)}`;
 }
 
 /** Searchable, height-capped chip picker for a scope dimension. Large lists
