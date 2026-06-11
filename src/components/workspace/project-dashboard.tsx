@@ -9,7 +9,8 @@
  * Read-only stats derived from useSources / useGraph; the only action is jumping
  * into the Learn list to distill the not-yet-learned sources.
  */
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import { toast } from "sonner";
 import {
   Target,
   Layers,
@@ -18,22 +19,64 @@ import {
   ArrowRight,
   Sparkles,
   ChevronRight,
+  Brain,
+  Loader2,
+  RefreshCw,
+  X,
 } from "lucide-react";
 import { useWorkspace } from "@/lib/store";
-import { useProjects, useSources, useGraph } from "@/lib/api";
+import { useProjects, useSources, useGraph, useModelUsagePolicy } from "@/lib/api";
+import { needsPaidConfirm } from "@/lib/settings";
+import { getModelOption } from "@/lib/ai/models";
 import { tagLabel } from "@/lib/taxonomy";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Markdown } from "@/components/markdown";
 import { ProjectSettings } from "./project-settings";
+
+/** Persisted learning analysis (per project) — disposable, like askHistory. */
+type Analysis = { text: string; modelId: string; createdAt: string };
+const analysisKey = (projectId: string) => `pf.learnAnalysis.${projectId}`;
+
+function readAnalysis(projectId: string | null): Analysis | null {
+  if (!projectId || typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(analysisKey(projectId));
+    return raw ? (JSON.parse(raw) as Analysis) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeAnalysis(projectId: string, a: Analysis | null): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (a) window.localStorage.setItem(analysisKey(projectId), JSON.stringify(a));
+    else window.localStorage.removeItem(analysisKey(projectId));
+  } catch {
+    /* quota — ignore */
+  }
+}
 
 export function ProjectDashboard() {
   const activeProjectId = useWorkspace((s) => s.activeProjectId);
   const setCenterMode = useWorkspace((s) => s.setCenterMode);
+  const modelId = useWorkspace((s) => s.modelId);
   const { data: projects } = useProjects();
   const { data } = useSources(activeProjectId);
   const { data: graph } = useGraph(activeProjectId);
+  const modelUsagePolicy = useModelUsagePolicy(activeProjectId);
   const project = projects?.find((p) => p.id === activeProjectId);
+
+  const [analysis, setAnalysis] = useState<Analysis | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  // Load persisted analysis for the active project (guarded set-during-render).
+  const [loadedFor, setLoadedFor] = useState<string | null>(null);
+  if (activeProjectId !== loadedFor) {
+    setLoadedFor(activeProjectId);
+    setAnalysis(readAnalysis(activeProjectId));
+  }
 
   const sources = useMemo(() => data?.sources ?? [], [data]);
   const learnedSources = sources.filter((s) => s.status === "distilled");
@@ -58,10 +101,131 @@ export function ProjectDashboard() {
 
   const topTags = (graph?.tags ?? []).slice(0, 16);
 
+  function confirmPaid(): boolean {
+    if (!needsPaidConfirm(modelUsagePolicy, modelId)) return true;
+    return window.confirm(
+      `${getModelOption(modelId).label} is a paid model and will use API credits. Continue?`,
+    );
+  }
+
+  /** Build a meta-analysis prompt from the project's learning state (no
+   *  retrieval — this reasons over the taxonomy/status, not the raw content). */
+  function buildAnalysisPrompt(): string {
+    const cats = data?.categories ?? [];
+    const authors = (graph?.authors ?? []).map((a) => a.displayName ?? a.slug);
+    const gameNames = (graph?.entities ?? []).filter((e) => e.type === "game").map((g) => g.name);
+    const topicsLine = learnedTopics.length
+      ? learnedTopics.map(([c, n]) => `- ${c} (${n})`).join("\n")
+      : "- (nothing learned yet)";
+    const notLearnedLine = toLearn.length
+      ? toLearn.slice(0, 40).map((s) => `- ${s.title} [${s.type}]`).join("\n")
+      : "- (none — everything captured is learned)";
+    return `You are a learning strategist for a knowledge-to-project compiler. Analyze the
+current state of this project's knowledge base against its GOAL and advise what
+to do next. Be concrete and prioritized — the user wants to know where the gaps
+are and what to learn next.
+
+PROJECT: ${project?.title ?? ""}
+GOAL: ${project?.goal || "(no goal set)"}
+
+LEARNING STATUS:
+- Captured sources: ${captured}
+- Learned (distilled): ${learned} (${pct}%)
+- Captured but not yet learned: ${toLearn.length}
+
+TOPICS LEARNED (category · source count):
+${topicsLine}
+
+TAGS SURFACED: ${topTags.length ? topTags.map((t) => `#${tagLabel(t)}`).join(" ") : "(none)"}
+DEFINED CATEGORIES (taxonomy): ${cats.length ? cats.map((c) => c.name).join(", ") : "(none)"}
+AUTHORS COVERED: ${authors.length ? authors.join(", ") : "(none)"}
+GAMES/REFERENCES: ${gameNames.length ? gameNames.join(", ") : "(none)"}
+
+SOURCES NOT YET LEARNED:
+${notLearnedLine}
+
+Write a tight, actionable analysis in markdown with these short sections:
+## Status — where this knowledge base stands relative to the GOAL.
+## Coverage & gaps — which topics are well covered; which are thin or missing
+for achieving the GOAL.
+## Learn next — a prioritized list of concrete next steps (specific topics to
+seek out, source types to capture, or which not-yet-learned sources to distill
+first, and why). Keep it brief and skimmable.`;
+  }
+
+  async function analyze() {
+    if (!activeProjectId || analyzing || !confirmPaid()) return;
+    setAnalyzing(true);
+    try {
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ modelId, prompt: buildAnalysisPrompt() }),
+      });
+      const json = (await res.json()) as { output?: string; error?: string };
+      if (!res.ok) throw new Error(json.error ?? "Analysis failed.");
+      const entry: Analysis = {
+        text: json.output ?? "",
+        modelId,
+        createdAt: new Date().toISOString(),
+      };
+      setAnalysis(entry);
+      writeAnalysis(activeProjectId, entry);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Analysis failed.");
+    } finally {
+      setAnalyzing(false);
+    }
+  }
+
+  function dismissAnalysis() {
+    if (!activeProjectId) return;
+    setAnalysis(null);
+    writeAnalysis(activeProjectId, null);
+  }
+
   if (!project) return null;
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
+      {/* AI learning analysis — pinned suggestion of what to do next. */}
+      {analysis ? (
+        <Card className="space-y-2 border-primary/30 bg-primary/[0.03] p-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <Brain className="size-4 text-primary" />
+            <span className="text-sm font-semibold">Suggested next steps</span>
+            <span className="text-xs text-muted-foreground">
+              {analysis.modelId} · {analysis.createdAt.slice(0, 16).replace("T", " ")}
+            </span>
+            <div className="ml-auto flex items-center gap-1">
+              <Button size="sm" variant="ghost" onClick={analyze} disabled={analyzing}>
+                {analyzing ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+                Re-analyze
+              </Button>
+              <Button size="icon-sm" variant="ghost" onClick={dismissAnalysis} title="Dismiss">
+                <X className="size-3.5" />
+              </Button>
+            </div>
+          </div>
+          <Markdown>{analysis.text}</Markdown>
+        </Card>
+      ) : (
+        <Card className="flex flex-wrap items-center gap-3 border-dashed p-4">
+          <Brain className="size-5 shrink-0 text-primary" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium">Analyze my learning</p>
+            <p className="text-xs text-muted-foreground">
+              Let the model review what you&apos;ve learned, where the gaps are, and what to learn
+              next toward your goal.
+            </p>
+          </div>
+          <Button onClick={analyze} disabled={analyzing || captured === 0}>
+            {analyzing ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
+            {analyzing ? "Analyzing…" : "Analyze"}
+          </Button>
+        </Card>
+      )}
+
       <div>
         <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
           Learning overview
